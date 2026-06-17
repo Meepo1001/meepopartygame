@@ -3896,6 +3896,20 @@ body {
   padding-right: 4px;
 }
 
+.keep-awake-btn {
+  min-width: 42px;
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.keep-awake-btn.active {
+  background: #9a6617;
+  color: #fff4d4;
+  box-shadow: 0 0 0 2px rgba(255, 224, 143, 0.42);
+}
+
 /* Progressive image loading overrides */
 .board-card.image-loaded,
 .seat-card.image-loaded {

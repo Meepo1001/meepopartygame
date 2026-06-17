@@ -8,6 +8,8 @@ const state = {
   reconnecting: false,
   reconnectTimer: null,
   reconnectAttempts: 0,
+  keepAwake: false,
+  wakeLock: null,
 };
 
 const els = {
@@ -31,6 +33,7 @@ const els = {
   generalRulesBtn: document.querySelector("#generalRulesBtn"),
   roleBoardBtn: document.querySelector("#roleBoardBtn"),
   roomSettingsBtn: document.querySelector("#roomSettingsBtn"),
+  keepAwakeBtn: document.querySelector("#keepAwakeBtn"),
   victoryOverlay: document.querySelector("#victoryOverlay"),
   identityModal: document.querySelector("#identityModal"),
   modalTitle: document.querySelector("#modalTitle"),
@@ -273,6 +276,7 @@ function reconnectByName(name) {
 function bindStaticEvents() {
   els.newGameBtn.addEventListener("click", handleTopGameButton);
   els.restartRejectBtn?.addEventListener("click", () => send("rejectRestart"));
+  els.keepAwakeBtn?.addEventListener("click", toggleWakeLock);
   els.sendChatBtn.addEventListener("click", sendChat);
   els.chatInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendChat();
@@ -302,6 +306,78 @@ function bindStaticEvents() {
     if (button.dataset.mode) payload.mode = button.dataset.mode;
     send(action, payload);
   });
+
+  document.addEventListener("visibilitychange", handleVisibilityRestore);
+  window.addEventListener("pageshow", handleVisibilityRestore);
+  window.addEventListener("focus", handleVisibilityRestore);
+  window.addEventListener("online", handleVisibilityRestore);
+}
+
+async function toggleWakeLock() {
+  if (state.keepAwake) {
+    await releaseWakeLock(true);
+    return;
+  }
+  await requestWakeLock();
+}
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator)) {
+    state.error = "当前浏览器不支持保持亮屏；息屏后会自动尝试重连。";
+    render();
+    return false;
+  }
+  if (document.visibilityState !== "visible") return false;
+  try {
+    const sentinel = await navigator.wakeLock.request("screen");
+    state.keepAwake = true;
+    state.wakeLock = sentinel;
+    sentinel.addEventListener("release", () => {
+      if (state.wakeLock === sentinel) state.wakeLock = null;
+      updateWakeLockButton();
+    });
+    state.error = "";
+    updateWakeLockButton();
+    render();
+    return true;
+  } catch {
+    state.error = "保持亮屏申请失败；请确认页面在 HTTPS 下打开，并保持浏览器在前台。";
+    updateWakeLockButton();
+    render();
+    return false;
+  }
+}
+
+async function releaseWakeLock(manual = false) {
+  if (manual) state.keepAwake = false;
+  const sentinel = state.wakeLock;
+  state.wakeLock = null;
+  try {
+    await sentinel?.release();
+  } catch {
+    // The browser may already have released it when the page was hidden.
+  }
+  updateWakeLockButton();
+  render();
+}
+
+function handleVisibilityRestore() {
+  if (document.visibilityState && document.visibilityState !== "visible") return;
+  ensureLiveConnection();
+  if (state.keepAwake && !state.wakeLock) requestWakeLock();
+}
+
+function ensureLiveConnection() {
+  if (!state.socket || state.socket.readyState === WebSocket.CLOSED || state.socket.readyState === WebSocket.CLOSING) {
+    connect();
+  }
+}
+
+function updateWakeLockButton() {
+  if (!els.keepAwakeBtn) return;
+  els.keepAwakeBtn.classList.toggle("active", Boolean(state.wakeLock));
+  els.keepAwakeBtn.textContent = state.wakeLock ? "亮中" : "亮";
+  els.keepAwakeBtn.title = state.wakeLock ? "已保持亮屏" : "保持亮屏";
 }
 
 function send(type, payload = {}) {
@@ -324,6 +400,7 @@ function sendChat() {
 function render() {
   const game = state.view?.game;
   els.app.classList.toggle("in-game", Boolean(game));
+  updateWakeLockButton();
   updatePlayerCountClass();
   renderTopActions();
   renderIntel();
