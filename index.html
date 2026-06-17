@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bloodbound 联机版原型</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">6 / 8 / 10 人局 / 双阵营 / 联机测试版</p>
+          <h1>Bloodbound 联机版</h1>
+        </div>
+        <div id="joinPanel" class="join-panel"></div>
+        <div class="top-actions">
+          <button id="generalRulesBtn" class="primary-btn utility-btn" type="button">通用规则</button>
+          <button id="roleBoardBtn" class="primary-btn utility-btn" type="button">公开角色看板</button>
+          <button id="roomSettingsBtn" class="top-settings-btn" type="button" aria-label="房间设置" title="房间设置">⚙</button>
+          <button id="newGameBtn" class="primary-btn" type="button">开始游戏</button>
+          <button id="restartRejectBtn" class="primary-btn restart-reject-btn hidden" type="button">拒绝</button>
+        </div>
+      </section>
+
+      <section class="game-layout">
+        <aside class="player-column">
+          <div id="leftPlayersGrid" class="players-column"></div>
+        </aside>
+
+        <section class="center-column">
+          <div id="centerTopPlayer" class="center-player-slot"></div>
+          <section class="info-window">
+            <section id="intelPanel" class="intel-panel"></section>
+
+            <section class="chat-panel">
+              <div class="chat-header">
+                <div>
+                  <h2>公共聊天室</h2>
+                  <p>只有玩家手动输入后，才会显示聊天内容。</p>
+                </div>
+              </div>
+              <div id="chatList" class="chat-list" aria-live="polite"></div>
+              <div class="chat-compose">
+                <input id="chatInput" type="text" placeholder="输入公开发言，例如：玩家 3 很可疑。" />
+                <button id="sendChatBtn" class="small-btn" type="button">发送</button>
+              </div>
+            </section>
+
+            <section class="log-panel">
+              <h2>记录</h2>
+              <p id="logHint" class="log-hint">当前显示全局公开记录。</p>
+              <ol id="logList"></ol>
+              <div class="mini-status-box">
+                <section id="statusPanel" class="status-panel" aria-live="polite"></section>
+                <p id="actionHint">点击“开始游戏”开始。</p>
+              </div>
+            </section>
+          </section>
+          <div id="centerBottomPlayer" class="center-player-slot"></div>
+
+          <section class="control-panel action-window">
+            <div class="control-actions legacy-actions">
+              <div id="actionControls" class="actions"></div>
+            </div>
+          </section>
+        </section>
+
+        <aside class="player-column">
+          <div id="rightPlayersGrid" class="players-column"></div>
+        </aside>
+      </section>
+
+      <div id="victoryOverlay" class="victory-overlay hidden"></div>
+    </main>
+
+    <div id="identityModal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-box">
+        <div class="modal-header">
+          <h2 id="modalTitle">信息</h2>
+          <button id="closeModalBtn" class="icon-btn" type="button" aria-label="关闭">×</button>
+        </div>
+        <div id="modalBody"></div>
+      </div>
+    </div>
+
+    <script src="online.js"></script>
+  </body>
+</html>
