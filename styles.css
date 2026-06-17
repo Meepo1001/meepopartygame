@@ -3895,3 +3895,36 @@ body {
   padding-left: 4px;
   padding-right: 4px;
 }
+
+/* Progressive image loading overrides */
+.board-card.image-loaded,
+.seat-card.image-loaded {
+  background:
+    linear-gradient(180deg, rgba(8, 8, 8, 0.04), rgba(8, 8, 8, 0.12)),
+    var(--loaded-card-art) center / cover no-repeat,
+    var(--card-art) center / cover no-repeat,
+    #1b1611;
+}
+
+.board-card.image-loading {
+  background:
+    linear-gradient(180deg, rgba(11, 10, 8, 0.08), rgba(11, 10, 8, 0.22)),
+    var(--card-art) center / cover no-repeat,
+    #1b1611;
+}
+
+.modal-box.role-board-mode .cinematic-role-card.image-loaded {
+  background-image: var(--loaded-role-art), var(--role-art);
+  background-size: var(--role-bg-size, 100%), cover;
+  background-position: var(--role-bg-x, 50%) var(--role-bg-y, 50%), center;
+  background-repeat: no-repeat;
+  background-color: #1b1611;
+}
+
+.modal-box.role-board-mode .cinematic-role-card.image-loading {
+  background-image: var(--role-art);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: #1b1611;
+}

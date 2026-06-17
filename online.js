@@ -39,6 +39,18 @@ const els = {
 };
 
 const ROLE_ART = {
+  1: "assets/optimized-sm/roles/elder.webp",
+  2: "assets/optimized-sm/roles/assassin.webp",
+  3: "assets/optimized-sm/roles/harlequin.webp",
+  4: "assets/optimized-sm/roles/alchemist.webp",
+  5: "assets/optimized-sm/roles/oracle.webp",
+  6: "assets/optimized-sm/roles/guardian.webp",
+  7: "assets/optimized-sm/roles/berserker.webp",
+  8: "assets/optimized-sm/roles/mage.webp",
+  9: "assets/optimized-sm/roles/courtesan.webp",
+};
+
+const ROLE_ART_HD = {
   1: "assets/optimized/roles/elder.webp",
   2: "assets/optimized/roles/assassin.webp",
   3: "assets/optimized/roles/harlequin.webp",
@@ -84,8 +96,10 @@ const BOARD_UI_SETTINGS_KEY = "bloodbound.boardUiSettings.v1";
 const RECONNECT_KEY = "bloodbound.reconnect.v1";
 const DEFAULT_BOARD_UI_SETTINGS = { iconSize: 22, fontSize: 12, itemSize: 28 };
 const boardUiSettings = loadBoardUiSettings();
+const loadedImages = new Set();
 
 applyBoardUiSettings();
+preloadEssentialAssets();
 connect();
 bindStaticEvents();
 render();
@@ -155,6 +169,44 @@ function scheduleReconnect() {
   const delay = Math.min(10000, 1000 * 2 ** state.reconnectAttempts);
   state.reconnectAttempts += 1;
   state.reconnectTimer = setTimeout(connect, delay);
+}
+
+function preloadEssentialAssets() {
+  [
+    CARD_BACK_ART,
+    ACTION_ART.attack,
+    ACTION_ART.pass,
+    ACTION_ART.privateInfo,
+    ACTION_ART.dagger,
+    ROLE_ART[1],
+  ].forEach(preloadImage);
+}
+
+function preloadImage(src) {
+  if (!src || loadedImages.has(src)) return;
+  const image = new Image();
+  image.onload = () => {
+    loadedImages.add(src);
+    renderLoadedImage(src);
+  };
+  image.onerror = () => loadedImages.add(src);
+  image.src = src;
+}
+
+function renderLoadedImage(src) {
+  document.querySelectorAll(`[data-bg-src="${cssEscape(src)}"]`).forEach((element) => {
+    element.style.setProperty("--loaded-card-art", `url('${src}')`);
+    element.classList.add("image-loaded");
+  });
+  document.querySelectorAll(`[data-role-bg-src="${cssEscape(src)}"]`).forEach((element) => {
+    element.style.setProperty("--loaded-role-art", `url('${src}')`);
+    element.classList.add("image-loaded");
+  });
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(value);
+  return String(value).replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
 }
 
 function tryReconnect() {
@@ -626,7 +678,7 @@ function renderColumns(items, renderer) {
 
 function renderSeatCard(seat) {
   return `
-    <article class="player-card seat-card ${seat.empty ? "empty-seat" : ""}" style="--card-art:url('${CARD_BACK_ART}')">
+    <article class="player-card seat-card image-loaded ${seat.empty ? "empty-seat" : ""}" style="--card-art:url('${CARD_BACK_ART}');--loaded-card-art:url('${CARD_BACK_ART}')">
       <div class="player-head">
         <div class="card-id-stack">
           <h3 class="player-name">玩家 ${seat.id}</h3>
@@ -644,10 +696,13 @@ function renderPlayerCard(player) {
   const visual = player.visualIdentity || {};
   const isKnown = Boolean(visual.rank);
   const art = isKnown ? ROLE_ART[visual.rank] : CARD_BACK_ART;
+  if (isKnown) preloadImage(art);
+  const imageLoaded = !isKnown || loadedImages.has(art);
   const cardClasses = [
     "player-card",
     "board-card",
     isKnown ? "known" : "unknown",
+    imageLoaded ? "image-loaded" : "image-loading",
     visual.clan ? visual.clan.toLowerCase() : "neutral",
     player.id === state.selfId ? "current" : "",
     player.captured ? "captured" : "",
@@ -662,7 +717,7 @@ function renderPlayerCard(player) {
     : "";
 
   return `
-    <article class="${cardClasses}" style="--card-art:url('${art}')">
+    <article class="${cardClasses}" data-bg-src="${escapeHtml(art)}" style="--card-art:url('${CARD_BACK_ART}');${imageLoaded ? `--loaded-card-art:url('${art}')` : ""}">
       <div class="card-veil"></div>
       <div class="player-head">
         <div class="card-id-stack">
@@ -958,6 +1013,7 @@ function openRulesModal(type) {
 function setupRoleBoardSnap() {
   const board = els.modalBody.querySelector(".role-board");
   if (!board) return;
+  preloadRoleBoardAround(0);
   let isAnimating = false;
   board.addEventListener("wheel", (event) => {
     event.preventDefault();
@@ -970,15 +1026,23 @@ function setupRoleBoardSnap() {
     if (next === current) return;
     isAnimating = true;
     board.scrollTo({ top: next * board.clientHeight, behavior: "smooth" });
+    preloadRoleBoardAround(next);
     window.setTimeout(() => {
       isAnimating = false;
     }, 220);
   }, { passive: false });
 }
 
+function preloadRoleBoardAround(index) {
+  [index, index + 1].forEach((item) => {
+    const rank = item + 1;
+    if (ROLE_ART[rank]) preloadImage(ROLE_ART[rank]);
+  });
+}
+
 function roleCardsHtml() {
   return roleCardData().map((role) => `
-    <article class="role-rule-card cinematic-role-card" data-rank="${role.rank}" style="${roleCardStyle(role.rank)}">
+    <article class="role-rule-card cinematic-role-card ${loadedImages.has(ROLE_ART[role.rank]) ? "image-loaded" : "image-loading"}" data-rank="${role.rank}" data-role-bg-src="${ROLE_ART[role.rank]}" style="${roleCardStyle(role.rank)}">
       <div class="role-card-art">
         <div class="role-top-markers">
           ${role.markers.filter((marker) => marker.type !== "rank").map((marker) => markerTemplate(marker.type, marker.label)).join("")}
@@ -1018,12 +1082,15 @@ function setRoleTune(patch) {
 
 function roleCardStyle(rank) {
   const tune = getRoleTune();
+  const art = ROLE_ART[rank];
+  const loaded = loadedImages.has(art);
   return [
-    `--role-art:url('${ROLE_ART[rank]}')`,
+    `--role-art:url('${CARD_BACK_ART}')`,
+    loaded ? `--loaded-role-art:url('${art}')` : "",
     `--role-bg-size:${tune.scale}%`,
     `--role-bg-x:${tune.x}%`,
     `--role-bg-y:${tune.y}%`,
-  ].join(";");
+  ].filter(Boolean).join(";");
 }
 
 function activeRoleCard() {
