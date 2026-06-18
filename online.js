@@ -547,8 +547,8 @@ function roomStatusHtml() {
   }
   return `
     <p>你是玩家 ${state.selfId}${state.isHost ? "，房主" : ""}。当前人数：${seats.length} / ${config.playerCount}。</p>
-    ${state.isHost ? roomConfigForm(config) : "<p>等待房主配置人数和角色池。</p>"}
     ${hostDangerControlsHtml()}
+    ${state.isHost ? roomConfigForm(config) : "<p>等待房主配置人数和角色池。</p>"}
     <div class="seat-list">
       ${Array.from({ length: config.playerCount }, (_, index) => {
         const seat = seats.find((item) => item.playerId === index + 1);

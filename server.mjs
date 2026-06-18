@@ -336,7 +336,8 @@ function joinRoom(connection, rawName) {
   if (room.seats.length >= room.config.playerCount) throw new Error("房间已满。");
   if (room.game) throw new Error("游戏已经开始。");
 
-  const name = String(rawName || "").trim().slice(0, 12) || `玩家 ${room.seats.length + 1}`;
+  const requestedName = String(rawName || "").trim().slice(0, 12);
+  const name = uniqueJoinName(requestedName || `Player ${room.seats.length + 1}`);
   if (room.seats.some((seat) => seat.name === name)) {
     throw new Error("昵称已存在，请换一个昵称。");
   }
@@ -1349,6 +1350,21 @@ function heartbeatConnections() {
 
 function createReconnectToken() {
   return randomBytes(24).toString("hex");
+}
+
+function uniqueJoinName(baseName) {
+  const taken = new Set(room.seats.map((seat) => seat.name));
+  if (!taken.has(baseName)) return baseName;
+  const numeric = Number(baseName);
+  if (Number.isInteger(numeric) && numeric > 0) {
+    const candidate = `Player ${numeric}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  for (let index = 2; index <= 99; index += 1) {
+    const candidate = `${baseName}-${index}`.slice(0, 12);
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${baseName}-${Date.now()}`.slice(0, 12);
 }
 
 function requireHost(connection) {
