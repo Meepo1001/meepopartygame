@@ -131,7 +131,7 @@ function defaultConfig() {
 function cacheControlFor(requestPath) {
   if (requestPath === "/index.html") return "no-cache";
   if (requestPath.startsWith("/assets/")) return "public, max-age=31536000, immutable";
-  if (requestPath.endsWith(".css") || requestPath.endsWith(".js")) return "public, max-age=300";
+  if (requestPath.endsWith(".css") || requestPath.endsWith(".js")) return "no-cache";
   return "public, max-age=300";
 }
 
