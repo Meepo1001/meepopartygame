@@ -3990,19 +3990,20 @@ body {
 }
 
 .topbar .top-actions {
-  grid-column: 1 / 2 !important;
+  grid-column: 1 / -1 !important;
   grid-row: 2 !important;
-  width: 100% !important;
+  width: auto !important;
   min-width: 0 !important;
   display: grid !important;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 34px 34px !important;
+  grid-template-columns: 74px 74px 58px 34px 34px !important;
   align-items: center !important;
+  justify-content: start !important;
   gap: 6px !important;
 }
 
 .topbar .join-panel {
   grid-column: 2 / 3 !important;
-  grid-row: 1 / 3 !important;
+  grid-row: 1 !important;
   justify-self: stretch !important;
   max-width: none !important;
   width: 100% !important;

@@ -6,8 +6,8 @@ import { extname, join, normalize } from "node:path";
 const root = process.cwd();
 const port = Number(process.env.PORT || 4174);
 const host = process.env.HOST || "0.0.0.0";
-const HEARTBEAT_INTERVAL_MS = 25000;
-const STALE_CONNECTION_MS = 75000;
+const HEARTBEAT_INTERVAL_MS = 60000;
+const STALE_CONNECTION_MS = 300000;
 const CLANS = ["Rose", "Beast"];
 const CLAN_NAMES = { Rose: "玫瑰氏族", Beast: "野兽氏族" };
 const CLUE_BY_CLAN = { Rose: "玫瑰纹章", Beast: "野兽纹章" };
@@ -433,9 +433,6 @@ function startGame(connection) {
 function startNewGame() {
   if (room.seats.length !== room.config.playerCount) {
     throw new Error(`需要 ${room.config.playerCount} 名玩家加入后才能开始。`);
-  }
-  if (!allSeatsConnected()) {
-    throw new Error("有玩家离线，等待全部玩家重连后才能开始。");
   }
 
   const roles = shuffle(buildRoleDeck());
@@ -1090,7 +1087,7 @@ function allSeatsConnected() {
 function canStartGame(connection) {
   return !room.game
     && room.hostConnectionId === connection.id
-    && allSeatsConnected();
+    && room.seats.length === room.config.playerCount;
 }
 
 function visualIdentityFor(selfId, player, visibleIdentity) {
