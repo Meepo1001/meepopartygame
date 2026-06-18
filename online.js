@@ -8,6 +8,7 @@ const state = {
   reconnecting: false,
   reconnectTimer: null,
   reconnectAttempts: 0,
+  joinNameDraft: "",
   keepAwake: false,
   wakeLock: null,
 };
@@ -169,7 +170,7 @@ function connect() {
 
 function scheduleReconnect() {
   clearTimeout(state.reconnectTimer);
-  const delay = Math.min(10000, 1000 * 2 ** state.reconnectAttempts);
+  const delay = Math.min(3000, 600 * 2 ** state.reconnectAttempts);
   state.reconnectAttempts += 1;
   state.reconnectTimer = setTimeout(connect, delay);
 }
@@ -376,8 +377,8 @@ function ensureLiveConnection() {
 function updateWakeLockButton() {
   if (!els.keepAwakeBtn) return;
   els.keepAwakeBtn.classList.toggle("active", Boolean(state.wakeLock));
-  els.keepAwakeBtn.textContent = state.wakeLock ? "亮中" : "亮";
-  els.keepAwakeBtn.title = state.wakeLock ? "已保持亮屏" : "保持亮屏";
+  els.keepAwakeBtn.textContent = state.wakeLock ? "灭" : "亮";
+  els.keepAwakeBtn.title = state.wakeLock ? "关闭保持亮屏" : "保持亮屏";
 }
 
 function send(type, payload = {}) {
@@ -424,7 +425,7 @@ function renderTopActions() {
   els.restartRejectBtn && (els.restartRejectBtn.disabled = true);
 
   if (!game) {
-    els.newGameBtn.textContent = "开始游戏";
+    els.newGameBtn.textContent = "开始";
     els.newGameBtn.disabled = !room?.canStart;
     renderJoinPanel();
     return;
@@ -479,26 +480,42 @@ function handleTopGameButton() {
 function renderJoinPanel() {
   if (!els.joinPanel) return;
   if (!state.selfId) {
-    if (state.reconnecting) {
-      els.joinPanel.innerHTML = `<p class="joined-summary">正在重连...</p>`;
-      return;
-    }
-    els.joinPanel.innerHTML = `
+    let input = document.querySelector("#joinNameInput");
+    if (!input) {
+      els.joinPanel.innerHTML = `
       <div class="join-row compact-join-row">
         <input id="joinNameInput" type="text" maxlength="12" placeholder="昵称" />
         <button id="joinBtn" class="primary-btn" type="button">加入</button>
         <button id="reconnectBtn" class="primary-btn reconnect-btn" type="button">重连</button>
       </div>
-      <p>${state.connected ? "已连接本地服务。" : "正在连接..."}</p>
+      <p id="joinStatusText"></p>
     `;
-    const input = document.querySelector("#joinNameInput");
+      input = document.querySelector("#joinNameInput");
+      const joinButton = document.querySelector("#joinBtn");
+      const reconnectButton = document.querySelector("#reconnectBtn");
+      input.value = state.joinNameDraft || "";
+      input?.addEventListener("input", () => {
+        state.joinNameDraft = input.value;
+      });
+      joinButton?.addEventListener("click", () => send("joinRoom", { name: input.value }));
+      reconnectButton?.addEventListener("click", () => reconnectByName(input.value));
+      input?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && state.connected && !state.reconnecting) send("joinRoom", { name: input.value });
+      });
+    }
     const joinButton = document.querySelector("#joinBtn");
     const reconnectButton = document.querySelector("#reconnectBtn");
-    joinButton?.addEventListener("click", () => send("joinRoom", { name: input.value }));
-    reconnectButton?.addEventListener("click", () => reconnectByName(input.value));
-    input?.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") send("joinRoom", { name: input.value });
-    });
+    const statusText = document.querySelector("#joinStatusText");
+    const disabled = !state.connected || state.reconnecting;
+    if (joinButton) joinButton.disabled = disabled;
+    if (reconnectButton) reconnectButton.disabled = disabled;
+    if (statusText) {
+      statusText.textContent = state.reconnecting
+        ? "正在重连..."
+        : state.connected
+          ? "已连接服务器"
+          : "正在连接服务器...";
+    }
     return;
   }
   els.joinPanel.innerHTML = `<p class="joined-summary">玩家 ${state.selfId}${state.isHost ? " / 房主" : ""}</p>`;
@@ -724,6 +741,7 @@ function renderPlayers() {
       id: index + 1,
       name: seats.find((seat) => seat.playerId === index + 1)?.name || "等待加入",
       empty: !seats.some((seat) => seat.playerId === index + 1),
+      connected: seats.find((seat) => seat.playerId === index + 1)?.connected ?? false,
     }));
     renderColumns(placeholders, renderSeatCard);
     return;
@@ -754,13 +772,15 @@ function renderColumns(items, renderer) {
 }
 
 function renderSeatCard(seat) {
+  const offline = !seat.empty && seat.connected === false;
   return `
-    <article class="player-card seat-card image-loaded ${seat.empty ? "empty-seat" : ""}" style="--card-art:url('${CARD_BACK_ART}');--loaded-card-art:url('${CARD_BACK_ART}')">
+    <article class="player-card seat-card image-loaded ${seat.empty ? "empty-seat" : ""} ${offline ? "offline" : ""}" style="--card-art:url('${CARD_BACK_ART}');--loaded-card-art:url('${CARD_BACK_ART}')">
       <div class="player-head">
         <div class="card-id-stack">
           <h3 class="player-name">玩家 ${seat.id}</h3>
           <span class="corner-rank">X</span>
         </div>
+        <div class="status-badges">${offline ? offlineBadgeTemplate() : ""}</div>
       </div>
       <div class="card-status-strip seat-strip">
         <span class="seat-name">${escapeHtml(seat.name)}</span>
@@ -966,16 +986,21 @@ function renderAction() {
   } else if (!game) {
     const seatCount = room?.seats?.length || 0;
     const limit = room?.config?.playerCount || 6;
+    const offlineSeats = (room?.seats || []).filter((seat) => seat.connected === false);
     els.statusPanel.innerHTML = `
       <p class="status-line"><strong>连接：</strong>${state.connected ? "已连接" : "未连接"}</p>
       <p class="status-line"><strong>人数：</strong>${seatCount} / ${limit}</p>
+      ${offlineSeats.length ? `<p class="status-line"><strong>等待：</strong>${offlineSeats.map((seat) => `玩家${seat.playerId}`).join("、")} 重连</p>` : ""}
     `;
   } else {
     els.statusPanel.innerHTML = "";
   }
 
   if (!game) {
-    els.actionHint.textContent = state.selfId ? "等待房主开始游戏。" : "先加入房间。";
+    const offlineSeats = (room?.seats || []).filter((seat) => seat.connected === false);
+    els.actionHint.textContent = offlineSeats.length
+      ? `等待 ${offlineSeats.map((seat) => `玩家${seat.playerId}`).join("、")} 重连。`
+      : state.selfId ? "等待房主开始游戏。" : "先加入房间。";
     return;
   }
 

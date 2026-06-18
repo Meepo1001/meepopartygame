@@ -3910,6 +3910,42 @@ body {
   box-shadow: 0 0 0 2px rgba(255, 224, 143, 0.42);
 }
 
+/* Compact mobile top controls */
+.topbar {
+  gap: 6px !important;
+}
+
+.top-actions {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.top-actions .primary-btn {
+  min-width: 52px !important;
+  padding: 9px 10px !important;
+  white-space: nowrap !important;
+}
+
+.top-actions .utility-btn {
+  min-width: 58px !important;
+}
+
+.top-actions .top-settings-btn {
+  flex: 0 0 auto !important;
+  min-width: 34px !important;
+  width: 34px !important;
+  min-height: 34px !important;
+  height: 34px !important;
+}
+
+.top-actions .keep-awake-btn {
+  min-width: 34px !important;
+  width: auto !important;
+  padding: 0 7px !important;
+}
+
 /* Progressive image loading overrides */
 .board-card.image-loaded,
 .seat-card.image-loaded {
@@ -3918,6 +3954,17 @@ body {
     var(--loaded-card-art) center / cover no-repeat,
     var(--card-art) center / cover no-repeat,
     #1b1611;
+}
+
+.app .board-card.known.image-loaded,
+.app.player-count-6 .board-card.known.image-loaded,
+.app.player-count-8 .board-card.known.image-loaded,
+.app.player-count-10 .board-card.known.image-loaded {
+  background:
+    linear-gradient(180deg, rgba(8, 8, 8, 0.04), rgba(8, 8, 8, 0.12)),
+    var(--loaded-card-art) center / cover no-repeat,
+    var(--card-art) center / cover no-repeat,
+    #1b1611 !important;
 }
 
 .board-card.image-loading {

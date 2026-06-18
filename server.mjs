@@ -434,6 +434,9 @@ function startNewGame() {
   if (room.seats.length !== room.config.playerCount) {
     throw new Error(`需要 ${room.config.playerCount} 名玩家加入后才能开始。`);
   }
+  if (!allSeatsConnected()) {
+    throw new Error("有玩家离线，等待全部玩家重连后才能开始。");
+  }
 
   const roles = shuffle(buildRoleDeck());
   const players = room.seats.map((seat, index) => ({
@@ -995,7 +998,7 @@ function viewFor(connection) {
         name: seat.name,
         connected: seat.connected,
       })),
-      canStart: room.seats.length === room.config.playerCount && !game && room.hostConnectionId === connection.id,
+      canStart: canStartGame(connection),
     },
     game: game && selfId ? scopedGameView(selfId) : null,
   };
@@ -1077,6 +1080,17 @@ function playerViewFor(selfId, player) {
 
 function isSeatConnected(playerId) {
   return Boolean(room.seats.find((seat) => seat.playerId === playerId)?.connected);
+}
+
+function allSeatsConnected() {
+  return room.seats.length === room.config.playerCount
+    && room.seats.every((seat) => seat.connected && room.connections.has(seat.connectionId));
+}
+
+function canStartGame(connection) {
+  return !room.game
+    && room.hostConnectionId === connection.id
+    && allSeatsConnected();
 }
 
 function visualIdentityFor(selfId, player, visibleIdentity) {
