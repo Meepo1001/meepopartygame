@@ -8,6 +8,8 @@ const port = Number(process.env.PORT || 4174);
 const host = process.env.HOST || "0.0.0.0";
 const HEARTBEAT_INTERVAL_MS = 25000;
 const STALE_CONNECTION_MS = 120000;
+const RECONNECT_GRACE_MS = 45000;
+const SEAT_SWEEP_MS = 5000;
 const CLANS = ["Rose", "Beast"];
 const CLAN_NAMES = { Rose: "玫瑰氏族", Beast: "野兽氏族" };
 const CLUE_BY_CLAN = { Rose: "玫瑰纹章", Beast: "野兽纹章" };
@@ -120,6 +122,7 @@ server.listen(port, host, () => {
 });
 
 setInterval(heartbeatConnections, HEARTBEAT_INTERVAL_MS).unref();
+setInterval(sweepSeatConnectionStates, SEAT_SWEEP_MS).unref();
 
 function defaultConfig() {
   return {
@@ -353,6 +356,8 @@ function joinRoom(connection, rawName) {
     connectionId: connection.id,
     name,
     connected: true,
+    connectionState: "online",
+    disconnectedAt: null,
     reconnectToken: createReconnectToken(),
   });
   room.seats.sort((a, b) => a.playerId - b.playerId);
@@ -375,7 +380,7 @@ function reconnectRoom(connection, playerId, reconnectToken) {
     sendError(connection, "reconnect_invalid_token", "重连凭证无效，请尝试按昵称重连。");
     return;
   }
-  if (seat.connected && room.connections.has(seat.connectionId)) {
+  if (seatConnectionState(seat) === "online" && room.connections.has(seat.connectionId)) {
     sendError(connection, "reconnect_seat_online", "该昵称玩家仍在线。");
     return;
   }
@@ -396,7 +401,7 @@ function reconnectByName(connection, rawName) {
     sendError(connection, "reconnect_not_found", "没有找到该昵称的离线座位。");
     return;
   }
-  const offlineMatches = matches.filter((seat) => !seat.connected || !room.connections.has(seat.connectionId));
+  const offlineMatches = matches.filter((seat) => seatConnectionState(seat) !== "online" || !room.connections.has(seat.connectionId));
   if (!offlineMatches.length) {
     sendError(connection, "reconnect_seat_online", "该昵称玩家仍在线。");
     return;
@@ -417,6 +422,8 @@ function bindConnectionToSeat(connection, seat) {
   connection.name = seat.name;
   seat.connectionId = connection.id;
   seat.connected = true;
+  seat.connectionState = "online";
+  seat.disconnectedAt = null;
   if (wasHost || !room.hostConnectionId) room.hostConnectionId = connection.id;
   send(connection, {
     type: "joined",
@@ -430,6 +437,7 @@ function bindConnectionToSeat(connection, seat) {
 function startGame(connection) {
   requireHost(connection);
   if (room.game) throw new Error("游戏已经开始。");
+  if (!canStartGame(connection)) throw new Error("仍有玩家离线，暂时不能开始。");
   startNewGame();
 }
 
@@ -1001,7 +1009,8 @@ function viewFor(connection) {
       seats: room.seats.map((seat) => ({
         playerId: seat.playerId,
         name: seat.name,
-        connected: seat.connected,
+        connected: seatConnectionState(seat) === "online",
+        connectionState: seatConnectionState(seat),
       })),
       canStart: canStartGame(connection),
     },
@@ -1068,6 +1077,7 @@ function playerViewFor(selfId, player) {
     id: player.id,
     name: player.name,
     connected: isSeatConnected(player.id),
+    connectionState: playerConnectionState(player.id),
     wounds: player.wounds,
     revealed: player.revealed.map((entry) => ({
       marker: entry.marker,
@@ -1084,18 +1094,31 @@ function playerViewFor(selfId, player) {
 }
 
 function isSeatConnected(playerId) {
-  return Boolean(room.seats.find((seat) => seat.playerId === playerId)?.connected);
+  return playerConnectionState(playerId) === "online";
+}
+
+function playerConnectionState(playerId) {
+  const seat = room.seats.find((item) => item.playerId === playerId);
+  return seat ? seatConnectionState(seat) : "offline";
+}
+
+function seatConnectionState(seat) {
+  if (!seat) return "offline";
+  if (seat.connected && room.connections.has(seat.connectionId)) return "online";
+  if (seat.disconnectedAt && Date.now() - seat.disconnectedAt <= RECONNECT_GRACE_MS) return "reconnecting";
+  return "offline";
 }
 
 function allSeatsConnected() {
   return room.seats.length === room.config.playerCount
-    && room.seats.every((seat) => seat.connected && room.connections.has(seat.connectionId));
+    && room.seats.every((seat) => seatConnectionState(seat) === "online");
 }
 
 function canStartGame(connection) {
   return !room.game
     && room.hostConnectionId === connection.id
-    && room.seats.length === room.config.playerCount;
+    && room.seats.length === room.config.playerCount
+    && room.seats.every((seat) => seatConnectionState(seat) !== "offline");
 }
 
 function visualIdentityFor(selfId, player, visibleIdentity) {
@@ -1338,8 +1361,25 @@ function disconnect(connection) {
   if (!room.connections.has(connection.id)) return;
   room.connections.delete(connection.id);
   const seat = room.seats.find((item) => item.connectionId === connection.id);
-  if (seat) seat.connected = false;
+  if (seat) {
+    seat.connected = false;
+    seat.connectionState = "reconnecting";
+    seat.disconnectedAt = Date.now();
+  }
   broadcastAllViews();
+}
+
+function sweepSeatConnectionStates() {
+  let changed = false;
+  for (const seat of room.seats) {
+    const previous = seat.connectionState;
+    const next = seatConnectionState(seat);
+    if (previous !== next) {
+      seat.connectionState = next;
+      changed = true;
+    }
+  }
+  if (changed) broadcastAllViews();
 }
 
 function heartbeatConnections() {

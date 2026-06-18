@@ -98,6 +98,7 @@ const ACTION_ART = {
 const CARD_BACK_ART = "assets/card-backs/hidden-card.svg";
 const BOARD_UI_SETTINGS_KEY = "bloodbound.boardUiSettings.v1";
 const RECONNECT_KEY = "bloodbound.reconnect.v1";
+const SESSION_RECONNECT_KEY = "bloodbound.reconnect.session.v1";
 const DEFAULT_BOARD_UI_SETTINGS = { iconSize: 22, fontSize: 12, itemSize: 28 };
 const boardUiSettings = loadBoardUiSettings();
 const loadedImages = new Set();
@@ -153,6 +154,7 @@ function connect() {
       state.selfId = message.selfId || state.selfId;
       state.isHost = Boolean(message.isHost);
       state.error = "";
+      if (message.game) preloadAllRoleArt();
     }
     if (message.type === "error") {
       state.error = message.message || "操作失败。";
@@ -219,6 +221,12 @@ function cssEscape(value) {
 
 function tryReconnect() {
   if (state.selfId) return;
+  const sessionInfo = loadSessionReconnectInfo();
+  if (sessionInfo) {
+    state.reconnecting = true;
+    send("reconnectRoom", sessionInfo);
+    return;
+  }
   const store = loadReconnectStore();
   if (Object.keys(store.byName || {}).length > 1) return;
   const info = loadReconnectInfo();
@@ -236,6 +244,8 @@ function loadReconnectStore() {
 }
 
 function loadReconnectInfo(name = "") {
+  const sessionInfo = loadSessionReconnectInfo(name);
+  if (sessionInfo) return sessionInfo;
   const store = loadReconnectStore();
   const cleanName = String(name || "").trim();
   const byName = cleanName ? store.byName?.[cleanName] : null;
@@ -244,11 +254,24 @@ function loadReconnectInfo(name = "") {
   return { playerId: Number(info.playerId), reconnectToken: String(info.reconnectToken) };
 }
 
+function loadSessionReconnectInfo(name = "") {
+  try {
+    const info = JSON.parse(sessionStorage.getItem(SESSION_RECONNECT_KEY) || "null");
+    const cleanName = String(name || "").trim();
+    if (!info?.playerId || !info?.reconnectToken) return null;
+    if (cleanName && info.name && info.name !== cleanName) return null;
+    return { playerId: Number(info.playerId), reconnectToken: String(info.reconnectToken) };
+  } catch {
+    return null;
+  }
+}
+
 function saveReconnectInfo(playerId, reconnectToken, name = "") {
   const store = loadReconnectStore();
   const info = { playerId, reconnectToken, name: String(name || "").trim() };
   const byName = { ...(store.byName || {}) };
   if (info.name) byName[info.name] = info;
+  sessionStorage.setItem(SESSION_RECONNECT_KEY, JSON.stringify(info));
   localStorage.setItem(RECONNECT_KEY, JSON.stringify({ last: info, byName }));
 }
 
@@ -258,17 +281,23 @@ function clearReconnectInfo(name = "") {
   const cleanName = String(name || store.last?.name || "").trim();
   if (cleanName) delete byName[cleanName];
   const last = store.last?.name === cleanName ? null : store.last;
+  try {
+    const sessionInfo = JSON.parse(sessionStorage.getItem(SESSION_RECONNECT_KEY) || "null");
+    if (!cleanName || sessionInfo?.name === cleanName) sessionStorage.removeItem(SESSION_RECONNECT_KEY);
+  } catch {
+    sessionStorage.removeItem(SESSION_RECONNECT_KEY);
+  }
   localStorage.setItem(RECONNECT_KEY, JSON.stringify({ last, byName }));
 }
 
 function reconnectByName(name) {
   const cleanName = String(name || "").trim();
-  if (!cleanName) {
+  const info = loadReconnectInfo(name);
+  if (!cleanName && !info) {
     state.error = "请输入要重连的昵称。";
     render();
     return;
   }
-  const info = loadReconnectInfo(name);
   state.reconnecting = true;
   state.pendingReconnectName = cleanName;
   if (info) {
@@ -276,6 +305,17 @@ function reconnectByName(name) {
     return;
   }
   send("reconnectByName", { name: cleanName });
+}
+
+function manualReconnect() {
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    state.reconnecting = true;
+    connect();
+    render();
+    return;
+  }
+  const inputName = document.querySelector("#joinNameInput")?.value || state.joinNameDraft || state.view?.game?.self?.name || "";
+  reconnectByName(inputName);
 }
 
 function bindStaticEvents() {
@@ -429,7 +469,7 @@ function renderTopActions() {
   els.restartRejectBtn && (els.restartRejectBtn.disabled = true);
 
   if (!game) {
-    els.newGameBtn.textContent = "开始";
+    els.newGameBtn.textContent = "开始游戏";
     els.newGameBtn.disabled = !room?.canStart;
     renderJoinPanel();
     return;
@@ -444,7 +484,7 @@ function renderTopActions() {
 
   const vote = game.restartVote;
   if (!vote) {
-    els.newGameBtn.textContent = "重开";
+    els.newGameBtn.textContent = "结束游戏";
     els.newGameBtn.disabled = !state.selfId;
     renderJoinPanel();
     return;
@@ -522,7 +562,16 @@ function renderJoinPanel() {
     }
     return;
   }
-  els.joinPanel.innerHTML = `<p class="joined-summary">玩家 ${state.selfId}${state.isHost ? " / 房主" : ""}</p>`;
+  const reconnectButton = !state.connected || state.reconnecting
+    ? `<button id="inlineReconnectBtn" class="primary-btn reconnect-btn inline-reconnect-btn" type="button">${state.reconnecting ? "重连中" : "重连"}</button>`
+    : "";
+  els.joinPanel.innerHTML = `
+    <div class="joined-row">
+      <p class="joined-summary">玩家 ${state.selfId}${state.isHost ? " / 房主" : ""}</p>
+      ${reconnectButton}
+    </div>
+  `;
+  document.querySelector("#inlineReconnectBtn")?.addEventListener("click", manualReconnect);
 }
 
 function renderIntel() {
@@ -776,7 +825,8 @@ function renderColumns(items, renderer) {
 }
 
 function renderSeatCard(seat) {
-  const offline = !seat.empty && seat.connected === false;
+  const connectionState = seat.connectionState || (seat.connected === false ? "offline" : "online");
+  const offline = !seat.empty && connectionState !== "online";
   return `
     <article class="player-card seat-card image-loaded ${seat.empty ? "empty-seat" : ""} ${offline ? "offline" : ""}" style="--card-art:url('${CARD_BACK_ART}');--loaded-card-art:url('${CARD_BACK_ART}')">
       <div class="player-head">
@@ -784,7 +834,7 @@ function renderSeatCard(seat) {
           <h3 class="player-name">玩家 ${seat.id}</h3>
           <span class="corner-rank">X</span>
         </div>
-        <div class="status-badges">${offline ? offlineBadgeTemplate() : ""}</div>
+        <div class="status-badges">${offline ? offlineBadgeTemplate(connectionState) : ""}</div>
       </div>
       <div class="card-status-strip seat-strip">
         <span class="seat-name">${escapeHtml(seat.name)}</span>
@@ -807,7 +857,7 @@ function renderPlayerCard(player) {
     visual.clan ? visual.clan.toLowerCase() : "neutral",
     player.id === state.selfId ? "current" : "",
     player.captured ? "captured" : "",
-    player.connected === false ? "offline" : "",
+    player.connectionState && player.connectionState !== "online" ? player.connectionState : "",
   ].filter(Boolean).join(" ");
 
   const actionHtml = renderPlayerActions(player);
@@ -825,7 +875,7 @@ function renderPlayerCard(player) {
           <h3 class="player-name">${escapeHtml(player.name)}</h3>
           <span class="corner-rank">${isKnown ? `Rank ${visual.rank}` : "X"}</span>
         </div>
-        <div class="status-badges">${player.connected === false ? offlineBadgeTemplate() : ""}${badgeTemplate(player.badge)}</div>
+        <div class="status-badges">${player.connectionState && player.connectionState !== "online" ? offlineBadgeTemplate(player.connectionState) : ""}${badgeTemplate(player.badge)}</div>
       </div>
       ${identityCaption}
       <div class="card-status-strip">
@@ -846,8 +896,9 @@ function renderPlayerCard(player) {
   `;
 }
 
-function offlineBadgeTemplate() {
-  return `<span class="offline-badge" title="离线">离线</span>`;
+function offlineBadgeTemplate(connectionState = "offline") {
+  const text = connectionState === "reconnecting" ? "重连中" : "离线";
+  return `<span class="offline-badge ${connectionState}" title="${text}">${text}</span>`;
 }
 
 function renderPlayerActions(player) {
@@ -990,10 +1041,12 @@ function renderAction() {
   } else if (!game) {
     const seatCount = room?.seats?.length || 0;
     const limit = room?.config?.playerCount || 6;
-    const offlineSeats = (room?.seats || []).filter((seat) => seat.connected === false);
+    const reconnectingSeats = (room?.seats || []).filter((seat) => seat.connectionState === "reconnecting");
+    const offlineSeats = (room?.seats || []).filter((seat) => seat.connectionState === "offline");
     els.statusPanel.innerHTML = `
       <p class="status-line"><strong>连接：</strong>${state.connected ? "已连接" : "未连接"}</p>
       <p class="status-line"><strong>人数：</strong>${seatCount} / ${limit}</p>
+      ${reconnectingSeats.length ? `<p class="status-line"><strong>重连中：</strong>${reconnectingSeats.map((seat) => `玩家${seat.playerId}`).join("、")}</p>` : ""}
       ${offlineSeats.length ? `<p class="status-line"><strong>等待：</strong>${offlineSeats.map((seat) => `玩家${seat.playerId}`).join("、")} 重连</p>` : ""}
     `;
   } else {
@@ -1001,9 +1054,12 @@ function renderAction() {
   }
 
   if (!game) {
-    const offlineSeats = (room?.seats || []).filter((seat) => seat.connected === false);
+    const offlineSeats = (room?.seats || []).filter((seat) => seat.connectionState === "offline");
+    const reconnectingSeats = (room?.seats || []).filter((seat) => seat.connectionState === "reconnecting");
     els.actionHint.textContent = offlineSeats.length
       ? `等待 ${offlineSeats.map((seat) => `玩家${seat.playerId}`).join("、")} 重连。`
+      : reconnectingSeats.length
+        ? `玩家 ${reconnectingSeats.map((seat) => seat.playerId).join("、")} 正在重连，可短暂等待。`
       : state.selfId ? "等待房主开始游戏。" : "先加入房间。";
     return;
   }
@@ -1023,9 +1079,9 @@ function renderAction() {
 
 function isPlayerConnected(playerId) {
   const player = state.view?.game?.players?.find((item) => item.id === playerId);
-  if (player) return player.connected !== false;
+  if (player) return player.connectionState === "online";
   const seat = state.view?.room?.seats?.find((item) => item.playerId === playerId);
-  return seat ? seat.connected !== false : true;
+  return seat ? seat.connectionState === "online" : true;
 }
 
 function renderVictory() {
