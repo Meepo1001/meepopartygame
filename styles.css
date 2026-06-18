@@ -4077,3 +4077,35 @@ body {
   background-repeat: no-repeat;
   background-color: #1b1611;
 }
+
+/* Final deployment hotfix: force top controls into one row. */
+.topbar .top-actions {
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  grid-template-columns: none !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 6px !important;
+  overflow: visible !important;
+}
+
+.topbar .top-actions .utility-btn {
+  flex: 0 0 74px !important;
+  width: 74px !important;
+}
+
+.topbar .top-actions #newGameBtn {
+  flex: 0 0 44px !important;
+  width: 44px !important;
+}
+
+.topbar .top-actions .top-settings-btn {
+  flex: 0 0 34px !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  padding: 0 !important;
+}
+
+.topbar .top-actions .keep-awake-btn {
+  flex-basis: 34px !important;
+}

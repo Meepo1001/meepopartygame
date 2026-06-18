@@ -6,8 +6,8 @@ import { extname, join, normalize } from "node:path";
 const root = process.cwd();
 const port = Number(process.env.PORT || 4174);
 const host = process.env.HOST || "0.0.0.0";
-const HEARTBEAT_INTERVAL_MS = 60000;
-const STALE_CONNECTION_MS = 300000;
+const HEARTBEAT_INTERVAL_MS = 25000;
+const STALE_CONNECTION_MS = 120000;
 const CLANS = ["Rose", "Beast"];
 const CLAN_NAMES = { Rose: "玫瑰氏族", Beast: "野兽氏族" };
 const CLUE_BY_CLAN = { Rose: "玫瑰纹章", Beast: "野兽纹章" };
@@ -99,6 +99,8 @@ server.on("upgrade", (request, socket) => {
     name: "",
     lastSeenAt: Date.now(),
   };
+  socket.setKeepAlive(true, HEARTBEAT_INTERVAL_MS);
+  socket.setNoDelay(true);
   room.connections.set(connection.id, connection);
 
   socket.on("data", (chunk) => {
@@ -791,6 +793,7 @@ function useGuardian(connection, targetId) {
   requireAbility(connection, "guardian");
   const guardian = getPlayer(connection.playerId);
   const target = getActivePlayer(targetId);
+  if (guardian.wounds >= 3) throw new Error("Guardian cannot grant shield at 3 wounds.");
   if (target.id === guardian.id) throw new Error("守卫不能把盾牌交给自己。");
 
   addItem("shield", target.id, guardian.id);
@@ -929,6 +932,10 @@ function beginRankAbility(player) {
     return true;
   }
   if (ability === "guardian") {
+    if (player.wounds >= 3) {
+      addLog(`${player.name} has 3 wounds, so guardian ability does not trigger.`);
+      return false;
+    }
     game.phase = "ability";
     game.pendingAbility = { type: "guardian", playerId: player.id };
     addLog(`${player.name} 触发守卫能力。`);
@@ -1136,6 +1143,7 @@ function availableActionsFor(selfId, target) {
   }
   if (game.phase === "ability" && game.pendingAbility?.playerId === selfId) {
     const ability = game.pendingAbility.type;
+    if (ability === "guardian" && getPlayer(selfId).wounds >= 3) return actions;
     if (ability === "assassin" && target.id !== selfId && !isProtectedFromTargeting(target)) actions.push({ type: "useAssassinSkill", label: "刺杀" });
     if (ability === "harlequin" && target.id !== selfId && !game.pendingAbility.selectedIds.includes(target.id)) actions.push({ type: "selectHarlequinTarget", label: "偷看" });
     if (ability === "alchemist" && target.id === game.pendingAbility.protectedTargetId) {

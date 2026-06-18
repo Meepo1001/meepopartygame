@@ -186,6 +186,10 @@ function preloadEssentialAssets() {
   ].forEach(preloadImage);
 }
 
+function preloadAllRoleArt() {
+  Object.values(ROLE_ART).forEach(preloadImage);
+}
+
 function preloadImage(src) {
   if (!src || loadedImages.has(src)) return;
   const image = new Image();
@@ -1105,6 +1109,7 @@ function openRulesModal(type) {
       <button class="role-tune-toggle" type="button" aria-label="角色图设置" title="角色图设置">⚙</button>
     </span>
   `;
+  preloadAllRoleArt();
   els.modalBody.innerHTML = `
     <div class="role-board rules-modal-content">${roleCardsHtml()}</div>
   `;
@@ -1115,7 +1120,7 @@ function openRulesModal(type) {
 function setupRoleBoardSnap() {
   const board = els.modalBody.querySelector(".role-board");
   if (!board) return;
-  preloadRoleBoardAround(0);
+  preloadAllRoleArt();
   let isAnimating = false;
   board.addEventListener("wheel", (event) => {
     event.preventDefault();
