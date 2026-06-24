@@ -4109,3 +4109,334 @@ body {
 .topbar .top-actions .keep-awake-btn {
   flex-basis: 34px !important;
 }
+
+/* Mobile viewport and bottom-action stability pass. */
+:root {
+  --app-vh: 100dvh;
+}
+
+html,
+body {
+  height: var(--app-vh, 100dvh) !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.app {
+  height: var(--app-vh, 100dvh) !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.player-card.board-card,
+.player-card.seat-card {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.player-card.board-card .card-status-strip,
+.player-card.seat-card .card-status-strip {
+  margin-bottom: 34px !important;
+}
+
+.player-card.board-card .card-footer,
+.player-card.seat-card .card-footer {
+  position: absolute !important;
+  left: 5px !important;
+  right: 5px !important;
+  bottom: 5px !important;
+  z-index: 6 !important;
+  margin: 0 !important;
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 4px !important;
+}
+
+.player-card.board-card .card-footer > .card-actions,
+.player-card.seat-card .card-footer > .card-actions {
+  display: contents !important;
+}
+
+.player-card.board-card .card-footer .card-tool-btn,
+.player-card.seat-card .card-footer .card-tool-btn {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding: 3px 5px !important;
+}
+
+.player-card.board-card .private-actions .card-tool-btn span,
+.player-card.seat-card .private-actions .card-tool-btn span {
+  display: inline !important;
+}
+
+.app.small-height .topbar {
+  padding: 5px 7px !important;
+  gap: 4px !important;
+}
+
+.app.small-height .topbar h1 {
+  font-size: 18px !important;
+  line-height: 1 !important;
+}
+
+.app.small-height .eyebrow,
+.app.small-height .chat-header p,
+.app.small-height .log-hint {
+  display: none !important;
+}
+
+.app.small-height .player-card.board-card,
+.app.small-height .player-card.seat-card {
+  padding: 3px !important;
+}
+
+.app.small-height .player-name,
+.app.small-height .corner-rank {
+  font-size: 12px !important;
+  line-height: 0.95 !important;
+}
+
+.app.small-height .card-status-strip {
+  gap: 2px !important;
+  padding: 3px !important;
+  margin-bottom: 30px !important;
+}
+
+.app.small-height .wound-track span {
+  height: 4px !important;
+}
+
+.app.small-height .marker,
+.app.small-height .placeholder-token {
+  min-height: 15px !important;
+  font-size: 8px !important;
+}
+
+.app.small-height .card-tool-btn {
+  font-size: 9px !important;
+}
+
+.app.small-height .card-tool-btn img {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.app.tiny-height .player-card.board-card .card-status-strip,
+.app.tiny-height .player-card.seat-card .card-status-strip {
+  margin-bottom: 27px !important;
+}
+
+.app.tiny-height .player-card.board-card .card-footer .card-tool-btn,
+.app.tiny-height .player-card.seat-card .card-footer .card-tool-btn {
+  min-height: 24px !important;
+  height: 24px !important;
+  padding: 2px 4px !important;
+}
+
+.app.tiny-height .item-tray,
+.app.tiny-height .identity-caption {
+  display: none !important;
+}
+
+.modal-box.role-board-mode #modalBody {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  gap: 6px !important;
+}
+
+.role-image-progress {
+  color: #5d4421;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: right;
+}
+
+.modal-box.role-board-mode .cinematic-role-card.image-failed::after {
+  content: "图片加载失败，回到页面或重新打开会重试";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 46px;
+  z-index: 5;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(36, 29, 21, 0.78);
+  color: #fff4d2;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* TRTC voice controls */
+.topbar .top-actions .voice-btn {
+  flex: 0 0 34px !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  padding: 0 !important;
+}
+
+.voice-btn.active {
+  border-color: #3b9b69 !important;
+  background: #246445 !important;
+  color: #fff !important;
+}
+
+.voice-btn.muted {
+  border-color: #a87a2e !important;
+  background: #7c5a20 !important;
+}
+
+.voice-btn.speaking {
+  box-shadow: 0 0 0 3px rgba(73, 207, 132, 0.35), 0 0 14px rgba(73, 207, 132, 0.72) !important;
+}
+
+.voice-panel {
+  position: fixed;
+  top: 62px;
+  right: 8px;
+  z-index: 940;
+  width: min(320px, calc(100vw - 16px));
+  max-height: calc(var(--app-vh, 100dvh) - 72px);
+  overflow: auto;
+  padding: 12px;
+  border: 2px solid #b58a3c;
+  border-radius: 8px;
+  background: rgba(20, 18, 15, 0.97);
+  color: #f8ecd0;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.4);
+}
+
+.voice-panel.hidden {
+  display: none;
+}
+
+.voice-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.voice-panel .icon-btn {
+  width: 30px;
+  height: 30px;
+  color: #f8ecd0;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.voice-status-text {
+  min-height: 20px;
+  margin: 0 0 8px;
+  color: #dec99c;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.voice-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.voice-control-btn,
+.voice-participant button {
+  min-height: 34px;
+  border: 1px solid rgba(214, 180, 111, 0.7);
+  border-radius: 6px;
+  background: #4d4438;
+  color: #fff8e6;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.voice-control-btn.primary {
+  background: #24704b;
+}
+
+.voice-control-btn.danger {
+  background: #862f38;
+}
+
+.voice-control-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.voice-participants {
+  display: grid;
+  gap: 4px;
+}
+
+.voice-participant {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 7px;
+  border: 1px solid rgba(214, 180, 111, 0.24);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.voice-participant.speaking {
+  border-color: #4dcf84;
+  background: rgba(77, 207, 132, 0.12);
+}
+
+.voice-participant-name {
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-participant-state {
+  color: #cdb98e;
+  font-size: 11px;
+}
+
+.voice-participant button {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.voice-badge {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 50%;
+  background: #28704c;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.voice-badge.muted {
+  background: #76561f;
+}
+
+.player-card.voice-speaking {
+  box-shadow: inset 0 0 0 3px #52d78c, 0 0 12px rgba(82, 215, 140, 0.72) !important;
+}
+
+@media (max-width: 430px) {
+  .voice-panel {
+    top: 54px;
+    right: 5px;
+    width: min(300px, calc(100vw - 10px));
+    max-height: calc(var(--app-vh, 100dvh) - 60px);
+    padding: 9px;
+  }
+
+  .voice-participant {
+    min-height: 30px;
+    padding: 4px 6px;
+  }
+}

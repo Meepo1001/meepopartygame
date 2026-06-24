@@ -46,6 +46,15 @@ npm install
 
 ## 4. 用 PM2 启动游戏服务
 
+如果需要启用腾讯云 TRTC 自由麦，先在服务器设置环境变量。`SecretKey` 只能保存在服务器，不能写入 GitHub：
+
+```bash
+export TRTC_SDK_APP_ID="你的SDKAppID"
+export TRTC_SECRET_KEY="你的SecretKey"
+export TRTC_ROOM_ID="1001"
+export TRTC_USER_SIG_TTL="7200"
+```
+
 ```bash
 cd /opt/meepopartygame
 pm2 start ecosystem.config.cjs
@@ -60,6 +69,13 @@ pm2 startup
 ```bash
 pm2 status
 pm2 logs meepopartygame
+```
+
+日志中出现 `TRTC voice: configured` 表示语音凭证服务已启用。修改语音环境变量后执行：
+
+```bash
+pm2 restart meepopartygame --update-env
+pm2 save
 ```
 
 看到 `meepopartygame` 为 `online` 即可。
@@ -154,6 +170,7 @@ systemctl status cloudflared
 - `systemctl status cloudflared` 是 `active (running)`。
 - 手机和电脑可以同时进入 `https://meepopartygame.xyz`。
 - 多个玩家加入同一个房间，聊天和操作可以同步。
+- 玩家入座后顶部“麦”按钮可用，允许麦克风权限后可以加入自由麦。
 
 ## 8. 常用维护命令
 
@@ -185,4 +202,6 @@ systemctl restart cloudflared
 - 使用 Cloudflare Tunnel 时，不需要在阿里云安全组开放 `4174`。
 - 建议只保留 SSH `22`，后续可以把 SSH 来源限制为自己的 IP。
 - 当前版本没有数据库；服务器重启、PM2 重启、部署更新都会清空当前房间状态。
+- TRTC 音频直接在浏览器和腾讯云之间传输，不经过本机 Node 服务；游戏 WebSocket 与语音连接彼此独立。
+- 不要把 `TRTC_SECRET_KEY` 写进 `ecosystem.config.cjs`、前端文件、日志或 Git 仓库。
 - 如果未来要正式运营，需要补持久化、多房间、房间码、恢复码或账号系统。

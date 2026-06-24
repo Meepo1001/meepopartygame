@@ -1,7 +1,8 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { extname, join, normalize } from "node:path";
+import { deflateSync } from "node:zlib";
 
 const root = process.cwd();
 const port = Number(process.env.PORT || 4174);
@@ -14,6 +15,11 @@ const CLANS = ["Rose", "Beast"];
 const CLAN_NAMES = { Rose: "玫瑰氏族", Beast: "野兽氏族" };
 const CLUE_BY_CLAN = { Rose: "玫瑰纹章", Beast: "野兽纹章" };
 const VALID_PLAYER_COUNTS = [6, 8, 10];
+const TRTC_SDK_APP_ID = Number(process.env.TRTC_SDK_APP_ID || 0);
+const TRTC_SECRET_KEY = String(process.env.TRTC_SECRET_KEY || "");
+const TRTC_ROOM_ID = Number(process.env.TRTC_ROOM_ID || 1001);
+const TRTC_USER_SIG_TTL = Math.max(600, Number(process.env.TRTC_USER_SIG_TTL || 7200));
+const VOICE_CREDENTIAL_COOLDOWN_MS = 5000;
 
 const ROLE_DEFS = {
   1: { role: "长老", markers: ["clan", "clan", "rank"], clue: "same", ability: "elder" },
@@ -119,6 +125,7 @@ server.on("upgrade", (request, socket) => {
 server.listen(port, host, () => {
   console.log(`Bloodbound online prototype running on ${host}:${port}`);
   console.log(`Local URL: http://127.0.0.1:${port}/`);
+  console.log(`TRTC voice: ${voiceConfigured() ? "configured" : "disabled (missing TRTC_SDK_APP_ID/TRTC_SECRET_KEY)"}`);
 });
 
 setInterval(heartbeatConnections, HEARTBEAT_INTERVAL_MS).unref();
@@ -237,6 +244,12 @@ function handleClientEvent(connection, event) {
         reconnectByName(connection, event.name);
         break;
       case "pong":
+        break;
+      case "requestVoiceCredential":
+        requestVoiceCredential(connection);
+        break;
+      case "setVoiceState":
+        setVoiceState(connection, event.connected, event.muted);
         break;
       case "startGame":
         startGame(connection);
@@ -359,6 +372,8 @@ function joinRoom(connection, rawName) {
     connectionState: "online",
     disconnectedAt: null,
     reconnectToken: createReconnectToken(),
+    voiceConnected: false,
+    voiceMuted: false,
   });
   room.seats.sort((a, b) => a.playerId - b.playerId);
 
@@ -432,6 +447,74 @@ function bindConnectionToSeat(connection, seat) {
     reconnectToken: seat.reconnectToken,
     isHost: room.hostConnectionId === connection.id,
   });
+}
+
+function requestVoiceCredential(connection) {
+  if (!connection.playerId) throw new Error("加入房间后才能使用语音。");
+  if (!voiceConfigured()) {
+    sendError(connection, "voice_unavailable", "语音服务尚未配置。");
+    return;
+  }
+  const now = Date.now();
+  if (connection.voiceCredentialIssuedAt && now - connection.voiceCredentialIssuedAt < VOICE_CREDENTIAL_COOLDOWN_MS) {
+    sendError(connection, "voice_rate_limited", "语音凭证申请过于频繁，请稍后重试。");
+    return;
+  }
+  connection.voiceCredentialIssuedAt = now;
+  const issuedAt = Math.floor(now / 1000);
+  const userId = voiceUserId(connection.playerId);
+  send(connection, {
+    type: "voiceCredential",
+    sdkAppId: TRTC_SDK_APP_ID,
+    roomId: TRTC_ROOM_ID,
+    userId,
+    userSig: generateUserSig(userId, issuedAt, TRTC_USER_SIG_TTL),
+    expiresAt: (issuedAt + TRTC_USER_SIG_TTL) * 1000,
+  });
+}
+
+function setVoiceState(connection, connected, muted) {
+  if (!connection.playerId) return;
+  const seat = room.seats.find((item) => item.playerId === connection.playerId);
+  if (!seat) return;
+  const nextConnected = Boolean(connected);
+  const nextMuted = nextConnected && Boolean(muted);
+  if (seat.voiceConnected === nextConnected && seat.voiceMuted === nextMuted) return;
+  seat.voiceConnected = nextConnected;
+  seat.voiceMuted = nextMuted;
+  broadcastAllViews();
+}
+
+function voiceConfigured() {
+  return Number.isInteger(TRTC_SDK_APP_ID) && TRTC_SDK_APP_ID > 0 && Boolean(TRTC_SECRET_KEY);
+}
+
+function voiceUserId(playerId) {
+  return `player-${playerId}`;
+}
+
+function generateUserSig(userId, issuedAt, expiresIn) {
+  const content = [
+    `TLS.identifier:${userId}`,
+    `TLS.sdkappid:${TRTC_SDK_APP_ID}`,
+    `TLS.time:${issuedAt}`,
+    `TLS.expire:${expiresIn}`,
+    "",
+  ].join("\n");
+  const signature = createHmac("sha256", TRTC_SECRET_KEY).update(content).digest("base64");
+  const payload = {
+    "TLS.ver": "2.0",
+    "TLS.identifier": userId,
+    "TLS.sdkappid": TRTC_SDK_APP_ID,
+    "TLS.expire": expiresIn,
+    "TLS.time": issuedAt,
+    "TLS.sig": signature,
+  };
+  return base64UrlEncode(deflateSync(Buffer.from(JSON.stringify(payload))));
+}
+
+function base64UrlEncode(buffer) {
+  return buffer.toString("base64").replaceAll("+", "*").replaceAll("/", "-").replaceAll("=", "_");
 }
 
 function startGame(connection) {
@@ -1006,11 +1089,14 @@ function viewFor(connection) {
     room: {
       config: room.config,
       roleDirectory: roleDirectory(),
+      voiceAvailable: voiceConfigured(),
       seats: room.seats.map((seat) => ({
         playerId: seat.playerId,
         name: seat.name,
         connected: seatConnectionState(seat) === "online",
         connectionState: seatConnectionState(seat),
+        voiceConnected: Boolean(seat.voiceConnected),
+        voiceMuted: Boolean(seat.voiceMuted),
       })),
       canStart: canStartGame(connection),
     },
@@ -1089,6 +1175,8 @@ function playerViewFor(selfId, player) {
     visualIdentity: visualIdentityFor(selfId, player, visibleIdentity),
     badge: badgeFor(player.id),
     items: itemViewsFor(player.id),
+    voiceConnected: Boolean(room.seats.find((seat) => seat.playerId === player.id)?.voiceConnected),
+    voiceMuted: Boolean(room.seats.find((seat) => seat.playerId === player.id)?.voiceMuted),
     availableActions: availableActionsFor(selfId, player),
   };
 }
@@ -1376,6 +1464,10 @@ function sweepSeatConnectionStates() {
     const next = seatConnectionState(seat);
     if (previous !== next) {
       seat.connectionState = next;
+      if (next === "offline") {
+        seat.voiceConnected = false;
+        seat.voiceMuted = false;
+      }
       changed = true;
     }
   }

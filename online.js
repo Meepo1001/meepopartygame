@@ -11,6 +11,22 @@ const state = {
   joinNameDraft: "",
   keepAwake: false,
   wakeLock: null,
+  voice: {
+    trtc: null,
+    status: "idle",
+    joined: false,
+    muted: false,
+    desiredJoin: false,
+    panelOpen: false,
+    error: "",
+    credential: null,
+    credentialTimer: null,
+    reconnectTimer: null,
+    remoteUsers: new Set(),
+    speakingPlayerIds: new Set(),
+    locallyMutedPlayerIds: new Set(),
+    sdkPromise: null,
+  },
 };
 
 const els = {
@@ -35,6 +51,12 @@ const els = {
   roleBoardBtn: document.querySelector("#roleBoardBtn"),
   roomSettingsBtn: document.querySelector("#roomSettingsBtn"),
   keepAwakeBtn: document.querySelector("#keepAwakeBtn"),
+  voiceBtn: document.querySelector("#voiceBtn"),
+  voicePanel: document.querySelector("#voicePanel"),
+  closeVoicePanelBtn: document.querySelector("#closeVoicePanelBtn"),
+  voiceStatusText: document.querySelector("#voiceStatusText"),
+  voiceControls: document.querySelector("#voiceControls"),
+  voiceParticipants: document.querySelector("#voiceParticipants"),
   victoryOverlay: document.querySelector("#victoryOverlay"),
   identityModal: document.querySelector("#identityModal"),
   modalTitle: document.querySelector("#modalTitle"),
@@ -99,11 +121,15 @@ const CARD_BACK_ART = "assets/card-backs/hidden-card.svg";
 const BOARD_UI_SETTINGS_KEY = "bloodbound.boardUiSettings.v1";
 const RECONNECT_KEY = "bloodbound.reconnect.v1";
 const SESSION_RECONNECT_KEY = "bloodbound.reconnect.session.v1";
+const VOICE_PREF_KEY = "bloodbound.voice.pref.v1";
+const TRTC_SDK_URL = "https://web.sdk.qcloud.com/trtc/webrtc/v5/dist/trtc.js";
 const DEFAULT_BOARD_UI_SETTINGS = { iconSize: 22, fontSize: 12, itemSize: 28 };
 const boardUiSettings = loadBoardUiSettings();
 const loadedImages = new Set();
+const imageStates = new Map();
 
 applyBoardUiSettings();
+updateViewportMetrics();
 preloadEssentialAssets();
 connect();
 bindStaticEvents();
@@ -135,11 +161,15 @@ function connect() {
     render();
   });
 
-  socket.addEventListener("message", (event) => {
+  socket.addEventListener("message", async (event) => {
     if (state.socket !== socket) return;
     const message = JSON.parse(event.data);
     if (message.type === "ping") {
       send("pong");
+      return;
+    }
+    if (message.type === "voiceCredential") {
+      await handleVoiceCredential(message);
       return;
     }
     if (message.type === "joined") {
@@ -148,16 +178,24 @@ function connect() {
       state.reconnecting = false;
       state.pendingReconnectName = "";
       if (message.reconnectToken) saveReconnectInfo(message.playerId, message.reconnectToken, message.name);
+      if (state.voice.joined) syncVoiceState();
     }
     if (message.type === "gameView") {
       state.view = message;
-      state.selfId = message.selfId || state.selfId;
+      state.selfId = message.selfId ?? null;
       state.isHost = Boolean(message.isHost);
       state.error = "";
       if (message.game) preloadAllRoleArt();
+      if (!message.selfId && state.voice.joined) await leaveVoice();
     }
     if (message.type === "error") {
-      state.error = message.message || "操作失败。";
+      if (String(message.code || "").startsWith("voice_")) {
+        state.voice.status = "error";
+        state.voice.error = message.message || "语音服务暂时不可用。";
+        renderVoiceUi();
+      } else {
+        state.error = message.message || "操作失败。";
+      }
       if (state.reconnecting && message.code === "reconnect_invalid_token") {
         state.reconnecting = false;
         clearReconnectInfo(state.pendingReconnectName);
@@ -188,18 +226,30 @@ function preloadEssentialAssets() {
   ].forEach(preloadImage);
 }
 
-function preloadAllRoleArt() {
-  Object.values(ROLE_ART).forEach(preloadImage);
+function preloadAllRoleArt(options = {}) {
+  Object.values(ROLE_ART).forEach((src) => preloadImage(src, options));
+  updateRoleImageProgress();
 }
 
-function preloadImage(src) {
+function preloadImage(src, options = {}) {
   if (!src || loadedImages.has(src)) return;
+  const state = imageStates.get(src);
+  if (state === "loading") return;
+  if (state === "failed" && !options.retryFailed) return;
+  imageStates.set(src, "loading");
   const image = new Image();
   image.onload = () => {
     loadedImages.add(src);
+    imageStates.set(src, "loaded");
     renderLoadedImage(src);
+    updateRoleImageProgress();
   };
-  image.onerror = () => loadedImages.add(src);
+  image.onerror = () => {
+    loadedImages.delete(src);
+    imageStates.set(src, "failed");
+    renderFailedImage(src);
+    updateRoleImageProgress();
+  };
   image.src = src;
 }
 
@@ -207,11 +257,34 @@ function renderLoadedImage(src) {
   document.querySelectorAll(`[data-bg-src="${cssEscape(src)}"]`).forEach((element) => {
     element.style.setProperty("--loaded-card-art", `url('${src}')`);
     element.classList.add("image-loaded");
+    element.classList.remove("image-loading", "image-failed");
   });
   document.querySelectorAll(`[data-role-bg-src="${cssEscape(src)}"]`).forEach((element) => {
     element.style.setProperty("--loaded-role-art", `url('${src}')`);
     element.classList.add("image-loaded");
+    element.classList.remove("image-loading", "image-failed");
   });
+}
+
+function renderFailedImage(src) {
+  document.querySelectorAll(`[data-bg-src="${cssEscape(src)}"], [data-role-bg-src="${cssEscape(src)}"]`).forEach((element) => {
+    element.classList.remove("image-loaded", "image-loading");
+    element.classList.add("image-failed");
+  });
+}
+
+function imageLoadClass(src) {
+  if (loadedImages.has(src)) return "image-loaded";
+  return imageStates.get(src) === "failed" ? "image-failed" : "image-loading";
+}
+
+function updateRoleImageProgress() {
+  const progress = document.querySelector("#roleImageProgress");
+  if (!progress) return;
+  const sources = Object.values(ROLE_ART);
+  const loaded = sources.filter((src) => loadedImages.has(src)).length;
+  const failed = sources.filter((src) => imageStates.get(src) === "failed").length;
+  progress.textContent = failed ? `角色图 ${loaded}/${sources.length}，${failed} 张待重试` : `角色图 ${loaded}/${sources.length}`;
 }
 
 function cssEscape(value) {
@@ -322,6 +395,8 @@ function bindStaticEvents() {
   els.newGameBtn.addEventListener("click", handleTopGameButton);
   els.restartRejectBtn?.addEventListener("click", () => send("rejectRestart"));
   els.keepAwakeBtn?.addEventListener("click", toggleWakeLock);
+  els.voiceBtn?.addEventListener("click", toggleVoicePanel);
+  els.closeVoicePanelBtn?.addEventListener("click", closeVoicePanel);
   els.sendChatBtn.addEventListener("click", sendChat);
   els.chatInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") sendChat();
@@ -335,6 +410,11 @@ function bindStaticEvents() {
   });
 
   document.addEventListener("click", (event) => {
+    const voiceButton = event.target.closest("[data-voice-action]");
+    if (voiceButton) {
+      handleVoiceAction(voiceButton.dataset.voiceAction, voiceButton.dataset.playerId);
+      return;
+    }
     const privateButton = event.target.closest("[data-modal='private-info']");
     if (privateButton) {
       openPrivateInfoModal();
@@ -356,6 +436,9 @@ function bindStaticEvents() {
   window.addEventListener("pageshow", handleVisibilityRestore);
   window.addEventListener("focus", handleVisibilityRestore);
   window.addEventListener("online", handleVisibilityRestore);
+  window.addEventListener("resize", updateViewportMetrics);
+  window.visualViewport?.addEventListener("resize", updateViewportMetrics);
+  window.visualViewport?.addEventListener("scroll", updateViewportMetrics);
 }
 
 async function toggleWakeLock() {
@@ -409,7 +492,18 @@ async function releaseWakeLock(manual = false) {
 function handleVisibilityRestore() {
   if (document.visibilityState && document.visibilityState !== "visible") return;
   ensureLiveConnection();
+  if (state.voice.desiredJoin && !state.voice.joined && state.connected && state.selfId) {
+    requestVoiceCredential();
+  }
+  if (els.identityModal?.querySelector(".modal-box.role-board-mode")) preloadAllRoleArt({ retryFailed: true });
   if (state.keepAwake && !state.wakeLock) requestWakeLock();
+}
+
+function updateViewportMetrics() {
+  const height = Math.round(window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 0);
+  if (height) document.documentElement.style.setProperty("--app-vh", `${height}px`);
+  els.app?.classList.toggle("small-height", height > 0 && height < 720);
+  els.app?.classList.toggle("tiny-height", height > 0 && height < 640);
 }
 
 function ensureLiveConnection() {
@@ -442,6 +536,393 @@ function sendChat() {
   els.chatInput.value = "";
 }
 
+function toggleVoicePanel() {
+  state.voice.panelOpen = !state.voice.panelOpen;
+  renderVoiceUi();
+}
+
+function closeVoicePanel() {
+  state.voice.panelOpen = false;
+  renderVoiceUi();
+}
+
+function handleVoiceAction(action, rawPlayerId) {
+  if (action === "join") joinVoice();
+  if (action === "mute") toggleVoiceMute();
+  if (action === "leave") leaveVoice();
+  if (action === "retry") joinVoice();
+  if (action === "local-mute") toggleRemoteVoiceMute(Number(rawPlayerId));
+  if (action === "resume") resumeVoiceAudio();
+}
+
+async function joinVoice() {
+  if (!state.selfId) {
+    state.voice.error = "加入房间后才能使用语音。";
+    state.voice.status = "error";
+    renderVoiceUi();
+    return;
+  }
+  if (!state.view?.room?.voiceAvailable) {
+    state.voice.error = "服务器尚未配置腾讯云 TRTC。";
+    state.voice.status = "error";
+    renderVoiceUi();
+    return;
+  }
+  state.voice.desiredJoin = true;
+  state.voice.error = "";
+  state.voice.status = "loading-sdk";
+  renderVoiceUi();
+  try {
+    await loadTrtcSdk();
+  } catch {
+    state.voice.status = "error";
+    state.voice.error = "TRTC 语音组件加载失败，请检查网络后重试。";
+    renderVoiceUi();
+    return;
+  }
+  state.voice.status = "requesting";
+  requestVoiceCredential();
+  renderVoiceUi();
+}
+
+function loadTrtcSdk() {
+  if (window.TRTC?.create) return Promise.resolve(window.TRTC);
+  if (state.voice.sdkPromise) return state.voice.sdkPromise;
+  state.voice.sdkPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = TRTC_SDK_URL;
+    script.async = true;
+    script.crossOrigin = "anonymous";
+    script.onload = () => window.TRTC?.create ? resolve(window.TRTC) : reject(new Error("TRTC global missing"));
+    script.onerror = () => reject(new Error("TRTC SDK load failed"));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    state.voice.sdkPromise = null;
+    throw error;
+  });
+  return state.voice.sdkPromise;
+}
+
+function requestVoiceCredential() {
+  if (!state.connected || !state.selfId) return;
+  send("requestVoiceCredential");
+}
+
+async function handleVoiceCredential(credential) {
+  state.voice.credential = credential;
+  scheduleVoiceCredentialRefresh(credential.expiresAt);
+  if (state.voice.joined && typeof state.voice.trtc?.updateUserSig === "function") {
+    try {
+      await state.voice.trtc.updateUserSig(credential.userSig);
+      return;
+    } catch {
+      // Re-entering below is safer than keeping an expired signature.
+    }
+  }
+  if (!state.voice.desiredJoin) return;
+  await enterVoiceRoom(credential);
+}
+
+async function enterVoiceRoom(credential) {
+  if (state.voice.status === "joining") return;
+  state.voice.status = "joining";
+  state.voice.error = "";
+  renderVoiceUi();
+  try {
+    if (!state.voice.trtc) {
+      state.voice.trtc = window.TRTC.create();
+      bindVoiceEvents(state.voice.trtc);
+    } else if (state.voice.joined) {
+      await safeVoiceCall("exitRoom");
+      state.voice.joined = false;
+    }
+    await state.voice.trtc.enterRoom({
+      scene: "rtc",
+      sdkAppId: Number(credential.sdkAppId),
+      userId: String(credential.userId),
+      userSig: credential.userSig,
+      roomId: Number(credential.roomId),
+    });
+    await state.voice.trtc.startLocalAudio();
+    const saved = loadVoicePreferences();
+    state.voice.muted = Boolean(saved.muted);
+    if (state.voice.muted) await updateLocalVoiceMute(true);
+    if (typeof state.voice.trtc.enableAudioVolumeEvaluation === "function") {
+      state.voice.trtc.enableAudioVolumeEvaluation(300);
+    }
+    state.voice.joined = true;
+    state.voice.status = "joined";
+    state.voice.error = "";
+    syncVoiceState();
+  } catch (error) {
+    state.voice.joined = false;
+    state.voice.status = "error";
+    state.voice.error = voiceErrorMessage(error);
+    syncVoiceState();
+  }
+  renderVoiceUi();
+}
+
+function bindVoiceEvents(trtc) {
+  const events = window.TRTC?.EVENT || {};
+  bindVoiceEvent(trtc, events.REMOTE_USER_ENTER, (event) => {
+    const userId = voiceEventUserId(event);
+    if (userId) state.voice.remoteUsers.add(userId);
+    renderVoiceUi();
+  });
+  bindVoiceEvent(trtc, events.REMOTE_USER_EXIT, (event) => {
+    const userId = voiceEventUserId(event);
+    if (userId) state.voice.remoteUsers.delete(userId);
+    renderVoiceUi();
+  });
+  bindVoiceEvent(trtc, events.REMOTE_AUDIO_AVAILABLE, async (event) => {
+    const userId = voiceEventUserId(event);
+    if (!userId) return;
+    state.voice.remoteUsers.add(userId);
+    if (typeof trtc.startRemoteAudio === "function") {
+      try {
+        await trtc.startRemoteAudio(userId);
+      } catch {
+        state.voice.status = "autoplay-blocked";
+      }
+    }
+    renderVoiceUi();
+  });
+  bindVoiceEvent(trtc, events.REMOTE_AUDIO_UNAVAILABLE, (event) => {
+    const playerId = voicePlayerId(voiceEventUserId(event));
+    if (playerId) state.voice.speakingPlayerIds.delete(playerId);
+    updateVoiceSpeakingClasses();
+  });
+  bindVoiceEvent(trtc, events.AUDIO_VOLUME, updateVoiceVolumes);
+  bindVoiceEvent(trtc, events.AUTOPLAY_FAILED, () => {
+    state.voice.status = "autoplay-blocked";
+    renderVoiceUi();
+  });
+  bindVoiceEvent(trtc, events.CONNECTION_STATE_CHANGED, (event) => {
+    const connectionState = String(event?.state || event || "").toUpperCase();
+    if ((connectionState.includes("DISCONNECTED") || connectionState.includes("FAILED")) && state.voice.desiredJoin) {
+      state.voice.joined = false;
+      state.voice.status = "joining";
+      syncVoiceState();
+      clearTimeout(state.voice.reconnectTimer);
+      state.voice.reconnectTimer = setTimeout(requestVoiceCredential, 1200);
+      renderVoiceUi();
+      return;
+    }
+    if (connectionState === "CONNECTED" || connectionState.endsWith("_CONNECTED")) {
+      clearTimeout(state.voice.reconnectTimer);
+      state.voice.joined = true;
+      state.voice.status = "joined";
+      syncVoiceState();
+      renderVoiceUi();
+    }
+  });
+  bindVoiceEvent(trtc, events.ERROR, (error) => {
+    state.voice.error = voiceErrorMessage(error);
+    if (!state.voice.joined) state.voice.status = "error";
+    renderVoiceUi();
+  });
+}
+
+function bindVoiceEvent(trtc, eventName, handler) {
+  if (eventName && typeof trtc.on === "function") trtc.on(eventName, handler);
+}
+
+function voiceEventUserId(event) {
+  if (typeof event === "string") return event;
+  return String(event?.userId || event?.userID || "");
+}
+
+function voicePlayerId(userId) {
+  const match = String(userId || "").match(/^player-(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+function updateVoiceVolumes(event) {
+  const entries = Array.isArray(event) ? event : event?.result || event?.volumes || [];
+  const speaking = new Set();
+  entries.forEach((entry) => {
+    const playerId = voicePlayerId(entry?.userId || entry?.userID) || (entry?.userId === "" ? state.selfId : null);
+    if (playerId && Number(entry?.volume || 0) >= 20) speaking.add(playerId);
+  });
+  state.voice.speakingPlayerIds = speaking;
+  updateVoiceSpeakingClasses();
+}
+
+function updateVoiceSpeakingClasses() {
+  document.querySelectorAll("[data-player-id]").forEach((card) => {
+    card.classList.toggle("voice-speaking", state.voice.speakingPlayerIds.has(Number(card.dataset.playerId)));
+  });
+  els.voiceBtn?.classList.toggle("speaking", state.voice.speakingPlayerIds.has(state.selfId));
+}
+
+async function toggleVoiceMute() {
+  if (!state.voice.joined) return;
+  const nextMuted = !state.voice.muted;
+  try {
+    await updateLocalVoiceMute(nextMuted);
+    state.voice.muted = nextMuted;
+    saveVoicePreferences();
+    syncVoiceState();
+  } catch (error) {
+    state.voice.error = voiceErrorMessage(error);
+  }
+  renderVoiceUi();
+}
+
+async function updateLocalVoiceMute(muted) {
+  if (typeof state.voice.trtc?.updateLocalAudio === "function") {
+    await state.voice.trtc.updateLocalAudio({ mute: Boolean(muted) });
+    return;
+  }
+  if (muted) await safeVoiceCall("stopLocalAudio");
+  else await safeVoiceCall("startLocalAudio");
+}
+
+async function toggleRemoteVoiceMute(playerId) {
+  if (!playerId || playerId === state.selfId || !state.voice.trtc) return;
+  const userId = `player-${playerId}`;
+  const muted = state.voice.locallyMutedPlayerIds.has(playerId);
+  try {
+    if (typeof state.voice.trtc.updateRemoteAudio === "function") {
+      await state.voice.trtc.updateRemoteAudio({ userId, mute: !muted });
+    } else if (muted && typeof state.voice.trtc.startRemoteAudio === "function") {
+      await state.voice.trtc.startRemoteAudio(userId);
+    } else if (!muted && typeof state.voice.trtc.stopRemoteAudio === "function") {
+      await state.voice.trtc.stopRemoteAudio(userId);
+    } else {
+      throw new Error("当前 TRTC SDK 不支持单独屏蔽远端玩家");
+    }
+    if (muted) state.voice.locallyMutedPlayerIds.delete(playerId);
+    else state.voice.locallyMutedPlayerIds.add(playerId);
+  } catch (error) {
+    state.voice.error = voiceErrorMessage(error);
+  }
+  renderVoiceUi();
+}
+
+async function resumeVoiceAudio() {
+  try {
+    if (typeof state.voice.trtc?.resumeAudio === "function") await state.voice.trtc.resumeAudio();
+    state.voice.status = state.voice.joined ? "joined" : "idle";
+    state.voice.error = "";
+  } catch (error) {
+    state.voice.error = voiceErrorMessage(error);
+  }
+  renderVoiceUi();
+}
+
+async function leaveVoice() {
+  state.voice.desiredJoin = false;
+  clearTimeout(state.voice.credentialTimer);
+  clearTimeout(state.voice.reconnectTimer);
+  try {
+    await safeVoiceCall("stopLocalAudio");
+    await safeVoiceCall("exitRoom");
+  } catch {
+    // Local state still needs to be released if the network is already gone.
+  }
+  state.voice.joined = false;
+  state.voice.muted = false;
+  state.voice.status = "idle";
+  state.voice.error = "";
+  state.voice.remoteUsers.clear();
+  state.voice.speakingPlayerIds.clear();
+  state.voice.locallyMutedPlayerIds.clear();
+  syncVoiceState();
+  updateVoiceSpeakingClasses();
+  renderVoiceUi();
+}
+
+async function safeVoiceCall(method, ...args) {
+  const fn = state.voice.trtc?.[method];
+  if (typeof fn === "function") return fn.apply(state.voice.trtc, args);
+}
+
+function syncVoiceState() {
+  if (!state.connected || !state.selfId) return;
+  send("setVoiceState", { connected: state.voice.joined, muted: state.voice.muted });
+}
+
+function scheduleVoiceCredentialRefresh(expiresAt) {
+  clearTimeout(state.voice.credentialTimer);
+  const delay = Math.max(60000, Number(expiresAt || 0) - Date.now() - 10 * 60 * 1000);
+  state.voice.credentialTimer = setTimeout(() => {
+    if (state.voice.desiredJoin) requestVoiceCredential();
+  }, delay);
+}
+
+function loadVoicePreferences() {
+  try {
+    return JSON.parse(sessionStorage.getItem(VOICE_PREF_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveVoicePreferences() {
+  sessionStorage.setItem(VOICE_PREF_KEY, JSON.stringify({ muted: state.voice.muted }));
+}
+
+function voiceErrorMessage(error) {
+  const message = String(error?.message || error?.reason || error || "");
+  if (/permission|denied|notallowed/i.test(message)) return "麦克风权限被拒绝，请在浏览器设置中允许麦克风。";
+  if (/device|notfound/i.test(message)) return "没有找到可用麦克风。";
+  if (/sig|signature|expired/i.test(message)) return "语音凭证失效，请重新加入语音。";
+  return message ? `语音连接失败：${message.slice(0, 100)}` : "语音连接失败，请重试。";
+}
+
+function renderVoiceUi() {
+  if (!els.voiceBtn || !els.voicePanel) return;
+  const available = Boolean(state.selfId && state.view?.room?.voiceAvailable);
+  els.voiceBtn.disabled = !available;
+  els.voiceBtn.classList.toggle("active", state.voice.joined);
+  els.voiceBtn.classList.toggle("muted", state.voice.joined && state.voice.muted);
+  els.voiceBtn.textContent = state.voice.joined ? (state.voice.muted ? "静" : "麦") : "麦";
+  els.voiceBtn.title = available ? "语音控制" : "加入房间且服务器配置 TRTC 后可用";
+  els.voicePanel.classList.toggle("hidden", !state.voice.panelOpen);
+  if (!state.voice.panelOpen) return;
+
+  const statusText = {
+    idle: "尚未加入语音",
+    "loading-sdk": "正在加载语音组件…",
+    requesting: "正在申请语音凭证…",
+    joining: "正在连接语音房…",
+    joined: state.voice.muted ? "已加入，麦克风静音" : "已加入，自由麦开启",
+    "autoplay-blocked": "浏览器阻止了播放，请点击恢复声音",
+    error: state.voice.error || "语音连接失败",
+  }[state.voice.status] || "语音状态未知";
+  els.voiceStatusText.textContent = statusText;
+
+  if (!state.voice.joined) {
+    const voiceBusy = ["loading-sdk", "requesting", "joining"].includes(state.voice.status);
+    els.voiceControls.innerHTML = `
+      <button class="voice-control-btn primary" type="button" data-voice-action="${state.voice.status === "error" ? "retry" : "join"}" ${available && !voiceBusy ? "" : "disabled"}>${voiceBusy ? "连接中" : state.voice.status === "error" ? "重试" : "加入语音"}</button>
+      ${state.voice.status === "autoplay-blocked" ? `<button class="voice-control-btn" type="button" data-voice-action="resume">恢复声音</button>` : ""}
+    `;
+  } else {
+    els.voiceControls.innerHTML = `
+      <button class="voice-control-btn ${state.voice.muted ? "" : "primary"}" type="button" data-voice-action="mute">${state.voice.muted ? "开麦" : "静音"}</button>
+      <button class="voice-control-btn danger" type="button" data-voice-action="leave">退出语音</button>
+      ${state.voice.status === "autoplay-blocked" ? `<button class="voice-control-btn" type="button" data-voice-action="resume">恢复声音</button>` : ""}
+    `;
+  }
+
+  const seats = state.view?.room?.seats || [];
+  els.voiceParticipants.innerHTML = seats.map((seat) => {
+    const speaking = state.voice.speakingPlayerIds.has(seat.playerId);
+    const localMuted = state.voice.locallyMutedPlayerIds.has(seat.playerId);
+    const voiceLabel = seat.voiceConnected ? (seat.voiceMuted ? "静音" : speaking ? "说话中" : "已加入") : "未加入";
+    return `
+      <div class="voice-participant ${speaking ? "speaking" : ""}">
+        <span class="voice-participant-name">${escapeHtml(seat.name)}</span>
+        <span class="voice-participant-state">${voiceLabel}</span>
+        ${seat.playerId !== state.selfId && seat.voiceConnected ? `<button type="button" data-voice-action="local-mute" data-player-id="${seat.playerId}">${localMuted ? "恢复" : "屏蔽"}</button>` : ""}
+      </div>
+    `;
+  }).join("");
+}
+
 function render() {
   const game = state.view?.game;
   els.app.classList.toggle("in-game", Boolean(game));
@@ -454,6 +935,7 @@ function render() {
   renderLogs();
   renderAction();
   renderVictory();
+  renderVoiceUi();
 }
 
 function updatePlayerCountClass() {
@@ -795,6 +1277,9 @@ function renderPlayers() {
       name: seats.find((seat) => seat.playerId === index + 1)?.name || "等待加入",
       empty: !seats.some((seat) => seat.playerId === index + 1),
       connected: seats.find((seat) => seat.playerId === index + 1)?.connected ?? false,
+      connectionState: seats.find((seat) => seat.playerId === index + 1)?.connectionState,
+      voiceConnected: Boolean(seats.find((seat) => seat.playerId === index + 1)?.voiceConnected),
+      voiceMuted: Boolean(seats.find((seat) => seat.playerId === index + 1)?.voiceMuted),
     }));
     renderColumns(placeholders, renderSeatCard);
     return;
@@ -828,13 +1313,13 @@ function renderSeatCard(seat) {
   const connectionState = seat.connectionState || (seat.connected === false ? "offline" : "online");
   const offline = !seat.empty && connectionState !== "online";
   return `
-    <article class="player-card seat-card image-loaded ${seat.empty ? "empty-seat" : ""} ${offline ? "offline" : ""}" style="--card-art:url('${CARD_BACK_ART}');--loaded-card-art:url('${CARD_BACK_ART}')">
+    <article class="player-card seat-card image-loaded ${seat.empty ? "empty-seat" : ""} ${offline ? "offline" : ""}" data-player-id="${seat.id}" style="--card-art:url('${CARD_BACK_ART}');--loaded-card-art:url('${CARD_BACK_ART}')">
       <div class="player-head">
         <div class="card-id-stack">
           <h3 class="player-name">玩家 ${seat.id}</h3>
           <span class="corner-rank">X</span>
         </div>
-        <div class="status-badges">${offline ? offlineBadgeTemplate(connectionState) : ""}</div>
+        <div class="status-badges">${offline ? offlineBadgeTemplate(connectionState) : ""}${voiceBadgeTemplate(seat)}</div>
       </div>
       <div class="card-status-strip seat-strip">
         <span class="seat-name">${escapeHtml(seat.name)}</span>
@@ -849,14 +1334,17 @@ function renderPlayerCard(player) {
   const art = isKnown ? ROLE_ART[visual.rank] : CARD_BACK_ART;
   if (isKnown) preloadImage(art);
   const imageLoaded = !isKnown || loadedImages.has(art);
+  const imageClass = isKnown ? imageLoadClass(art) : "image-loaded";
   const cardClasses = [
     "player-card",
     "board-card",
     isKnown ? "known" : "unknown",
-    imageLoaded ? "image-loaded" : "image-loading",
+    imageClass,
     visual.clan ? visual.clan.toLowerCase() : "neutral",
     player.id === state.selfId ? "current" : "",
     player.captured ? "captured" : "",
+    player.voiceConnected ? "voice-connected" : "",
+    state.voice.speakingPlayerIds.has(player.id) ? "voice-speaking" : "",
     player.connectionState && player.connectionState !== "online" ? player.connectionState : "",
   ].filter(Boolean).join(" ");
 
@@ -868,14 +1356,14 @@ function renderPlayerCard(player) {
     : "";
 
   return `
-    <article class="${cardClasses}" data-bg-src="${escapeHtml(art)}" style="--card-art:url('${CARD_BACK_ART}');${imageLoaded ? `--loaded-card-art:url('${art}')` : ""}">
+    <article class="${cardClasses}" data-player-id="${player.id}" data-bg-src="${escapeHtml(art)}" style="--card-art:url('${CARD_BACK_ART}');${imageLoaded ? `--loaded-card-art:url('${art}')` : ""}">
       <div class="card-veil"></div>
       <div class="player-head">
         <div class="card-id-stack">
           <h3 class="player-name">${escapeHtml(player.name)}</h3>
           <span class="corner-rank">${isKnown ? `Rank ${visual.rank}` : "X"}</span>
         </div>
-        <div class="status-badges">${player.connectionState && player.connectionState !== "online" ? offlineBadgeTemplate(player.connectionState) : ""}${badgeTemplate(player.badge)}</div>
+        <div class="status-badges">${player.connectionState && player.connectionState !== "online" ? offlineBadgeTemplate(player.connectionState) : ""}${voiceBadgeTemplate(player)}${badgeTemplate(player.badge)}</div>
       </div>
       ${identityCaption}
       <div class="card-status-strip">
@@ -899,6 +1387,12 @@ function renderPlayerCard(player) {
 function offlineBadgeTemplate(connectionState = "offline") {
   const text = connectionState === "reconnecting" ? "重连中" : "离线";
   return `<span class="offline-badge ${connectionState}" title="${text}">${text}</span>`;
+}
+
+function voiceBadgeTemplate(player) {
+  if (!player.voiceConnected) return "";
+  const muted = Boolean(player.voiceMuted);
+  return `<span class="voice-badge ${muted ? "muted" : "live"}" title="${muted ? "语音静音" : "已加入语音"}">${muted ? "静" : "麦"}</span>`;
 }
 
 function renderPlayerActions(player) {
@@ -1165,10 +1659,12 @@ function openRulesModal(type) {
       <button class="role-tune-toggle" type="button" aria-label="角色图设置" title="角色图设置">⚙</button>
     </span>
   `;
-  preloadAllRoleArt();
+  preloadAllRoleArt({ retryFailed: true });
   els.modalBody.innerHTML = `
+    <div id="roleImageProgress" class="role-image-progress" aria-live="polite"></div>
     <div class="role-board rules-modal-content">${roleCardsHtml()}</div>
   `;
+  updateRoleImageProgress();
   setupRoleTuneControls();
   setupRoleBoardSnap();
 }
@@ -1176,7 +1672,7 @@ function openRulesModal(type) {
 function setupRoleBoardSnap() {
   const board = els.modalBody.querySelector(".role-board");
   if (!board) return;
-  preloadAllRoleArt();
+  preloadAllRoleArt({ retryFailed: true });
   let isAnimating = false;
   board.addEventListener("wheel", (event) => {
     event.preventDefault();
@@ -1199,13 +1695,13 @@ function setupRoleBoardSnap() {
 function preloadRoleBoardAround(index) {
   [index, index + 1].forEach((item) => {
     const rank = item + 1;
-    if (ROLE_ART[rank]) preloadImage(ROLE_ART[rank]);
+    if (ROLE_ART[rank]) preloadImage(ROLE_ART[rank], { retryFailed: true });
   });
 }
 
 function roleCardsHtml() {
   return roleCardData().map((role) => `
-    <article class="role-rule-card cinematic-role-card ${loadedImages.has(ROLE_ART[role.rank]) ? "image-loaded" : "image-loading"}" data-rank="${role.rank}" data-role-bg-src="${ROLE_ART[role.rank]}" style="${roleCardStyle(role.rank)}">
+    <article class="role-rule-card cinematic-role-card ${imageLoadClass(ROLE_ART[role.rank])}" data-rank="${role.rank}" data-role-bg-src="${ROLE_ART[role.rank]}" style="${roleCardStyle(role.rank)}">
       <div class="role-card-art">
         <div class="role-top-markers">
           ${role.markers.filter((marker) => marker.type !== "rank").map((marker) => markerTemplate(marker.type, marker.label)).join("")}
