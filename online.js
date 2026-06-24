@@ -8,6 +8,8 @@ const state = {
   reconnecting: false,
   reconnectTimer: null,
   reconnectAttempts: 0,
+  pendingReconnectName: "",
+  pendingRoomAccess: null,
   joinNameDraft: "",
   keepAwake: false,
   wakeLock: null,
@@ -177,6 +179,10 @@ function connect() {
       state.isHost = Boolean(message.isHost);
       state.reconnecting = false;
       state.pendingReconnectName = "";
+      state.pendingRoomAccess = null;
+      if (!els.identityModal.classList.contains("hidden") && els.identityModal.querySelector(".modal-box")?.classList.contains("room-password-mode")) {
+        closeModal();
+      }
       if (message.reconnectToken) saveReconnectInfo(message.playerId, message.reconnectToken, message.name);
       if (state.voice.joined) syncVoiceState();
     }
@@ -189,20 +195,24 @@ function connect() {
       if (!message.selfId && state.voice.joined) await leaveVoice();
     }
     if (message.type === "error") {
-      if (String(message.code || "").startsWith("voice_")) {
+      if (String(message.code || "").startsWith("room_password_")) {
+        state.reconnecting = false;
+        state.pendingReconnectName = "";
+        showRoomPasswordError(message.code, message.message);
+      } else if (String(message.code || "").startsWith("voice_")) {
         state.voice.status = "error";
         state.voice.error = message.message || "语音服务暂时不可用。";
         renderVoiceUi();
       } else {
         state.error = message.message || "操作失败。";
       }
-      if (state.reconnecting && message.code === "reconnect_invalid_token") {
+      if (!String(message.code || "").startsWith("room_password_") && state.reconnecting && message.code === "reconnect_invalid_token") {
         state.reconnecting = false;
         clearReconnectInfo(state.pendingReconnectName);
-      } else if (state.reconnecting) {
+      } else if (!String(message.code || "").startsWith("room_password_") && state.reconnecting) {
         state.reconnecting = false;
       }
-      state.pendingReconnectName = "";
+      if (!String(message.code || "").startsWith("room_password_")) state.pendingReconnectName = "";
     }
     render();
   });
@@ -377,7 +387,94 @@ function reconnectByName(name) {
     send("reconnectRoom", info);
     return;
   }
-  send("reconnectByName", { name: cleanName });
+  state.pendingRoomAccess = { mode: "reconnect", name: cleanName };
+  if (roomRequiresPassword()) {
+    state.reconnecting = false;
+    openRoomPasswordModal("reconnect", cleanName);
+    return;
+  }
+  send("reconnectByName", { name: cleanName, password: "" });
+}
+
+function requestJoin(name) {
+  const cleanName = String(name || "").trim();
+  state.joinNameDraft = cleanName;
+  state.pendingRoomAccess = { mode: "join", name: cleanName };
+  if (roomRequiresPassword()) {
+    openRoomPasswordModal("join", cleanName);
+    return;
+  }
+  send("joinRoom", { name: cleanName, password: "" });
+}
+
+function roomRequiresPassword() {
+  return Boolean(state.view?.room?.passwordRequired);
+}
+
+function openRoomPasswordModal(mode, name) {
+  const cleanName = String(name || "").trim();
+  state.pendingRoomAccess = { mode, name: cleanName };
+  els.identityModal.classList.remove("hidden");
+  const modalBox = els.identityModal.querySelector(".modal-box");
+  modalBox?.classList.remove("role-board-mode", "private-info-mode", "room-settings-mode");
+  modalBox?.classList.add("room-password-mode");
+  els.modalTitle.textContent = mode === "reconnect" ? "昵称重连" : "进入房间";
+  els.modalBody.innerHTML = `
+    <form id="roomPasswordForm" class="room-password-form">
+      <p class="room-password-name">昵称：<strong>${escapeHtml(cleanName || "自动分配")}</strong></p>
+      <label class="room-password-field">
+        <span>房间密码</span>
+        <input id="roomPasswordInput" type="password" maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="请输入好友房间密码" />
+      </label>
+      <p id="roomPasswordError" class="room-password-error" role="alert"></p>
+      <div class="room-password-actions">
+        <button id="cancelRoomPasswordBtn" class="secondary-btn" type="button">取消</button>
+        <button id="confirmRoomPasswordBtn" class="primary-btn" type="submit">确认</button>
+      </div>
+    </form>
+  `;
+
+  const form = document.querySelector("#roomPasswordForm");
+  const input = document.querySelector("#roomPasswordInput");
+  document.querySelector("#cancelRoomPasswordBtn")?.addEventListener("click", closeModal);
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const password = input?.value || "";
+    if (!password) {
+      showRoomPasswordError("room_password_required", "请输入房间密码。");
+      return;
+    }
+    const action = state.pendingRoomAccess || { mode, name: cleanName };
+    const error = document.querySelector("#roomPasswordError");
+    const confirm = document.querySelector("#confirmRoomPasswordBtn");
+    if (error) error.textContent = "正在验证...";
+    if (confirm) confirm.disabled = true;
+    if (action.mode === "reconnect") {
+      state.reconnecting = true;
+      state.pendingReconnectName = action.name;
+      send("reconnectByName", { name: action.name, password });
+    } else {
+      send("joinRoom", { name: action.name, password });
+    }
+  });
+  window.setTimeout(() => input?.focus(), 0);
+}
+
+function showRoomPasswordError(code, message) {
+  const action = state.pendingRoomAccess;
+  const modalBox = els.identityModal.querySelector(".modal-box");
+  if (!modalBox?.classList.contains("room-password-mode") && action) {
+    openRoomPasswordModal(action.mode, action.name);
+  }
+  const input = document.querySelector("#roomPasswordInput");
+  const error = document.querySelector("#roomPasswordError");
+  const confirm = document.querySelector("#confirmRoomPasswordBtn");
+  if (error) error.textContent = message || "房间密码验证失败。";
+  if (input && code !== "room_password_rate_limited") {
+    input.value = "";
+    input.focus();
+  }
+  if (confirm) confirm.disabled = code === "room_password_rate_limited";
 }
 
 function manualReconnect() {
@@ -874,12 +971,23 @@ function voiceErrorMessage(error) {
 
 function renderVoiceUi() {
   if (!els.voiceBtn || !els.voicePanel) return;
-  const available = Boolean(state.selfId && state.view?.room?.voiceAvailable);
-  els.voiceBtn.disabled = !available;
+  const hasSeat = Boolean(state.selfId);
+  const serverReady = Boolean(state.view?.room?.voiceAvailable);
+  const available = Boolean(state.connected && hasSeat && serverReady);
+  const unavailableReason = !state.connected
+    ? "游戏服务器尚未连接。"
+    : !hasSeat
+      ? "请先输入昵称并加入游戏房间，不需要等待开局。"
+      : !serverReady
+        ? "当前网页连接的服务器没有启用 TRTC，请确认域名指向刚才配置的阿里云服务。"
+        : "";
+  els.voiceBtn.disabled = false;
+  els.voiceBtn.classList.toggle("unavailable", !available);
+  els.voiceBtn.setAttribute("aria-disabled", String(!available));
   els.voiceBtn.classList.toggle("active", state.voice.joined);
   els.voiceBtn.classList.toggle("muted", state.voice.joined && state.voice.muted);
   els.voiceBtn.textContent = state.voice.joined ? (state.voice.muted ? "静" : "麦") : "麦";
-  els.voiceBtn.title = available ? "语音控制" : "加入房间且服务器配置 TRTC 后可用";
+  els.voiceBtn.title = available ? "语音控制" : unavailableReason;
   els.voicePanel.classList.toggle("hidden", !state.voice.panelOpen);
   if (!state.voice.panelOpen) return;
 
@@ -892,7 +1000,7 @@ function renderVoiceUi() {
     "autoplay-blocked": "浏览器阻止了播放，请点击恢复声音",
     error: state.voice.error || "语音连接失败",
   }[state.voice.status] || "语音状态未知";
-  els.voiceStatusText.textContent = statusText;
+  els.voiceStatusText.textContent = available || state.voice.joined ? statusText : unavailableReason;
 
   if (!state.voice.joined) {
     const voiceBusy = ["loading-sdk", "requesting", "joining"].includes(state.voice.status);
@@ -1023,10 +1131,10 @@ function renderJoinPanel() {
       input?.addEventListener("input", () => {
         state.joinNameDraft = input.value;
       });
-      joinButton?.addEventListener("click", () => send("joinRoom", { name: input.value }));
+      joinButton?.addEventListener("click", () => requestJoin(input.value));
       reconnectButton?.addEventListener("click", () => reconnectByName(input.value));
       input?.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && state.connected && !state.reconnecting) send("joinRoom", { name: input.value });
+        if (event.key === "Enter" && state.connected && !state.reconnecting) requestJoin(input.value);
       });
     }
     const joinButton = document.querySelector("#joinBtn");
@@ -1096,7 +1204,7 @@ function roomStatusHtml() {
 function openRoomSettingsModal() {
   els.identityModal.classList.remove("hidden");
   const modalBox = els.identityModal.querySelector(".modal-box");
-  modalBox?.classList.remove("role-board-mode", "private-info-mode");
+  modalBox?.classList.remove("role-board-mode", "private-info-mode", "room-password-mode");
   modalBox?.classList.add("room-settings-mode");
   els.modalTitle.textContent = "房间状态";
   renderRoomSettingsModal("room");
@@ -1603,7 +1711,7 @@ function openPrivateInfoModal() {
   if (!game?.self) return;
   els.identityModal.classList.remove("hidden");
   const modalBox = els.identityModal.querySelector(".modal-box");
-  modalBox?.classList.remove("role-board-mode", "room-settings-mode");
+  modalBox?.classList.remove("role-board-mode", "room-settings-mode", "room-password-mode");
   modalBox?.classList.add("private-info-mode");
   els.modalTitle.textContent = "私密信息";
   els.modalBody.innerHTML = `
@@ -1629,7 +1737,7 @@ function openPrivateInfoModal() {
 function openRulesModal(type) {
   els.identityModal.classList.remove("hidden");
   const modalBox = els.identityModal.querySelector(".modal-box");
-  modalBox?.classList.remove("private-info-mode", "room-settings-mode");
+  modalBox?.classList.remove("private-info-mode", "room-settings-mode", "room-password-mode");
   modalBox?.classList.toggle("role-board-mode", type === "roles");
   if (type === "general") {
     els.modalTitle.textContent = "通用规则";
@@ -1882,7 +1990,8 @@ function itemChip(item) {
 
 function closeModal() {
   els.identityModal.classList.add("hidden");
-  els.identityModal.querySelector(".modal-box")?.classList.remove("role-board-mode", "private-info-mode", "room-settings-mode");
+  els.identityModal.querySelector(".modal-box")?.classList.remove("role-board-mode", "private-info-mode", "room-settings-mode", "room-password-mode");
+  state.pendingRoomAccess = null;
 }
 
 function markerObjectTemplate(marker) {

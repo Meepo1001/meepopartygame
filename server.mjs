@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { deflateSync } from "node:zlib";
 
@@ -20,6 +20,12 @@ const TRTC_SECRET_KEY = String(process.env.TRTC_SECRET_KEY || "");
 const TRTC_ROOM_ID = Number(process.env.TRTC_ROOM_ID || 1001);
 const TRTC_USER_SIG_TTL = Math.max(600, Number(process.env.TRTC_USER_SIG_TTL || 7200));
 const VOICE_CREDENTIAL_COOLDOWN_MS = 5000;
+const ROOM_PASSWORD = String(process.env.ROOM_PASSWORD || "");
+const ROOM_PASSWORD_HASH = hashRoomPassword(ROOM_PASSWORD);
+const PASSWORD_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
+const PASSWORD_BLOCK_MS = 10 * 60 * 1000;
+const PASSWORD_MAX_FAILURES = 8;
+const passwordAttempts = new Map();
 
 const ROLE_DEFS = {
   1: { role: "长老", markers: ["clan", "clan", "rank"], clue: "same", ability: "elder" },
@@ -106,6 +112,7 @@ server.on("upgrade", (request, socket) => {
     playerId: null,
     name: "",
     lastSeenAt: Date.now(),
+    clientIp: clientIpFor(request),
   };
   socket.setKeepAlive(true, HEARTBEAT_INTERVAL_MS);
   socket.setNoDelay(true);
@@ -126,6 +133,7 @@ server.listen(port, host, () => {
   console.log(`Bloodbound online prototype running on ${host}:${port}`);
   console.log(`Local URL: http://127.0.0.1:${port}/`);
   console.log(`TRTC voice: ${voiceConfigured() ? "configured" : "disabled (missing TRTC_SDK_APP_ID/TRTC_SECRET_KEY)"}`);
+  console.log(`Room password: ${roomPasswordRequired() ? "enabled" : "disabled"}`);
 });
 
 setInterval(heartbeatConnections, HEARTBEAT_INTERVAL_MS).unref();
@@ -222,6 +230,72 @@ function sendError(connection, code, message) {
   send(connection, { type: "error", code, message });
 }
 
+function roomPasswordRequired() {
+  return ROOM_PASSWORD.length > 0;
+}
+
+function hashRoomPassword(value) {
+  return createHash("sha256").update(String(value || ""), "utf8").digest();
+}
+
+function clientIpFor(request) {
+  const cloudflareIp = String(request.headers["cf-connecting-ip"] || "").trim();
+  if (cloudflareIp) return cloudflareIp;
+  const forwarded = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || request.socket.remoteAddress || "unknown";
+}
+
+function validateRoomPassword(connection, rawPassword) {
+  if (!roomPasswordRequired()) return true;
+
+  const now = Date.now();
+  const key = connection.clientIp || connection.id;
+  prunePasswordAttempts(now);
+  const current = passwordAttempts.get(key);
+  if (current?.blockedUntil > now) {
+    sendError(connection, "room_password_rate_limited", "密码错误次数过多，请 10 分钟后再试。");
+    return false;
+  }
+
+  const password = String(rawPassword || "");
+  if (!password) {
+    sendError(connection, "room_password_required", "请输入房间密码。");
+    return false;
+  }
+
+  const candidateHash = hashRoomPassword(password);
+  if (!timingSafeEqual(ROOM_PASSWORD_HASH, candidateHash)) {
+    const blocked = recordPasswordFailure(key, now);
+    sendError(
+      connection,
+      blocked ? "room_password_rate_limited" : "room_password_invalid",
+      blocked ? "密码错误次数过多，请 10 分钟后再试。" : "房间密码错误。",
+    );
+    return false;
+  }
+
+  passwordAttempts.delete(key);
+  return true;
+}
+
+function recordPasswordFailure(key, now) {
+  const previous = passwordAttempts.get(key);
+  const withinWindow = previous && now - previous.windowStartedAt < PASSWORD_ATTEMPT_WINDOW_MS;
+  const failures = withinWindow ? previous.failures + 1 : 1;
+  const windowStartedAt = withinWindow ? previous.windowStartedAt : now;
+  const blockedUntil = failures >= PASSWORD_MAX_FAILURES ? now + PASSWORD_BLOCK_MS : 0;
+  passwordAttempts.set(key, { failures, windowStartedAt, blockedUntil });
+  return blockedUntil > now;
+}
+
+function prunePasswordAttempts(now) {
+  for (const [key, attempt] of passwordAttempts) {
+    const windowExpired = now - attempt.windowStartedAt >= PASSWORD_ATTEMPT_WINDOW_MS;
+    const blockExpired = !attempt.blockedUntil || attempt.blockedUntil <= now;
+    if (windowExpired && blockExpired) passwordAttempts.delete(key);
+  }
+}
+
 function handleClientEvent(connection, event) {
   connection.lastSeenAt = Date.now();
   if (!event || typeof event.type !== "string") {
@@ -235,13 +309,13 @@ function handleClientEvent(connection, event) {
         setRoomConfig(connection, event.config || {});
         break;
       case "joinRoom":
-        joinRoom(connection, event.name);
+        joinRoom(connection, event.name, event.password);
         break;
       case "reconnectRoom":
         reconnectRoom(connection, Number(event.playerId), event.reconnectToken);
         break;
       case "reconnectByName":
-        reconnectByName(connection, event.name);
+        reconnectByName(connection, event.name, event.password);
         break;
       case "pong":
         break;
@@ -349,8 +423,9 @@ function setRoomConfig(connection, config) {
   broadcastAllViews();
 }
 
-function joinRoom(connection, rawName) {
+function joinRoom(connection, rawName, password) {
   if (connection.playerId) return;
+  if (!validateRoomPassword(connection, password)) return;
   if (room.seats.length >= room.config.playerCount) throw new Error("房间已满。");
   if (room.game) throw new Error("游戏已经开始。");
 
@@ -404,13 +479,14 @@ function reconnectRoom(connection, playerId, reconnectToken) {
   broadcastAllViews();
 }
 
-function reconnectByName(connection, rawName) {
+function reconnectByName(connection, rawName, password) {
   if (connection.playerId) return;
   const name = String(rawName || "").trim();
   if (!name) {
     sendError(connection, "reconnect_not_found", "请输入要重连的昵称。");
     return;
   }
+  if (!validateRoomPassword(connection, password)) return;
   const matches = room.seats.filter((seat) => seat.name === name);
   if (!matches.length) {
     sendError(connection, "reconnect_not_found", "没有找到该昵称的离线座位。");
@@ -1090,6 +1166,7 @@ function viewFor(connection) {
       config: room.config,
       roleDirectory: roleDirectory(),
       voiceAvailable: voiceConfigured(),
+      passwordRequired: roomPasswordRequired(),
       seats: room.seats.map((seat) => ({
         playerId: seat.playerId,
         name: seat.name,

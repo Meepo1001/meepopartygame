@@ -8,6 +8,7 @@ module.exports = {
         NODE_ENV: "production",
         HOST: "0.0.0.0",
         PORT: "4174",
+        ROOM_PASSWORD: process.env.ROOM_PASSWORD || "",
         TRTC_SDK_APP_ID: process.env.TRTC_SDK_APP_ID || "",
         TRTC_SECRET_KEY: process.env.TRTC_SECRET_KEY || "",
         TRTC_ROOM_ID: process.env.TRTC_ROOM_ID || "1001",

@@ -3549,10 +3549,73 @@ body {
 
 /* Room settings modal: match role-board width without taking role-board height. */
 .modal-box.room-settings-mode,
-.modal-box.private-info-mode {
+.modal-box.private-info-mode,
+.modal-box.room-password-mode {
   width: min(390px, calc(100vw - 16px));
   max-height: calc(100vh - 16px);
   overflow: auto;
+}
+
+.modal-box.room-password-mode {
+  height: auto;
+  padding: 18px;
+}
+
+.room-password-form {
+  display: grid;
+  gap: 14px;
+}
+
+.room-password-name,
+.room-password-error {
+  margin: 0;
+}
+
+.room-password-field {
+  display: grid;
+  gap: 6px;
+  color: #59462e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.room-password-field input {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid #c9b58d;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #241d16;
+  font: inherit;
+}
+
+.room-password-field input:focus {
+  border-color: #9b6a1e;
+  outline: 2px solid rgba(155, 106, 30, 0.18);
+}
+
+.room-password-error {
+  min-height: 20px;
+  color: #a51f2d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.room-password-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.room-password-actions button {
+  min-height: 40px;
+}
+
+.voice-btn.unavailable {
+  opacity: 0.72;
+  filter: grayscale(0.45);
+  cursor: pointer;
 }
 
 .modal-box.room-settings-mode {
@@ -3635,7 +3698,8 @@ body {
 
 @media (max-width: 430px) {
   .modal-box.room-settings-mode,
-  .modal-box.private-info-mode {
+  .modal-box.private-info-mode,
+  .modal-box.room-password-mode {
     width: min(390px, calc(100vw - 16px));
   }
 
@@ -4120,6 +4184,7 @@ body {
   height: var(--app-vh, 100dvh) !important;
   min-height: 0 !important;
   overflow: hidden !important;
+  touch-action: pan-x pan-y;
 }
 
 .app {

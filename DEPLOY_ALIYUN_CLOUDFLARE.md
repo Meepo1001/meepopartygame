@@ -53,6 +53,7 @@ export TRTC_SDK_APP_ID="你的SDKAppID"
 export TRTC_SECRET_KEY="你的SecretKey"
 export TRTC_ROOM_ID="1001"
 export TRTC_USER_SIG_TTL="7200"
+export ROOM_PASSWORD="建议使用6到32位字母和数字"
 ```
 
 ```bash
@@ -71,12 +72,14 @@ pm2 status
 pm2 logs meepopartygame
 ```
 
-日志中出现 `TRTC voice: configured` 表示语音凭证服务已启用。修改语音环境变量后执行：
+日志中出现 `TRTC voice: configured` 表示语音凭证服务已启用；出现 `Room password: enabled` 表示好友房间密码已启用。修改语音或房间密码环境变量后执行：
 
 ```bash
-pm2 restart meepopartygame --update-env
+pm2 restart ecosystem.config.cjs --only meepopartygame --update-env
 pm2 save
 ```
+
+房间密码只保存在服务器环境变量中，不要写入代码或提交到 GitHub。修改密码不会踢出现有玩家，但之后的新加入和昵称重连会立即使用新密码；持有有效重连 Token 的原玩家仍可直接恢复座位。
 
 看到 `meepopartygame` 为 `online` 即可。
 
